@@ -5,6 +5,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,8 +30,11 @@ jobs:
     - name: Compile and Assemble APK
       run: gradle assembleDebug
 
-    - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: SpectraTone-v1.0-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+    - name: Publish Direct APK (No ZIP)
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        cp app/build/outputs/apk/debug/app-debug.apk SpectraTone.apk
+        gh release delete latest --yes || true
+        git push --delete origin latest || true
+        gh release create latest SpectraTone.apk --title "SpectraTone Latest APK" --notes "Direct APK download for Android - No ZIP."
