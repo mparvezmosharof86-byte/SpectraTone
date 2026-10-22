@@ -27,15 +27,15 @@ jobs:
       with:
         gradle-version: 8.7
 
-    - name: Compile APK
+    - name: Compile APK Only
       run: gradle assembleDebug
 
-    - name: Release Direct APK
+    - name: Publish Direct APK
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v1.0.0
         name: "SpectraTone v1.0.0"
-        body: "Direct APK File - Download and Install directly on your phone."
+        body: "Direct APK File - Fast Build for Mobile Testing."
         files: app/build/outputs/apk/debug/app-debug.apk
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
