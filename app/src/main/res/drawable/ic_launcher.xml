@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#0D0D11"
+        android:pathData="M0,0h108v108h-108z"/>
+    <!-- Outer Studio Ring -->
+    <path
+        android:strokeColor="#00E676"
+        android:strokeWidth="4"
+        android:pathData="M54,20 A34,34 0 1,0 54,88 A34,34 0 1,0 54,20"/>
+    <!-- Inner Lens Aperture Core -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M54,36 L68,62 L40,62 Z"/>
+    <!-- Cyan Flare Accent -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,46 L62,60 L46,60 Z"/>
+</vector>
