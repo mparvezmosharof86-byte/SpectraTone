@@ -10,7 +10,6 @@ static inline uint8_t clamp8(float v) {
     return static_cast<uint8_t>(v);
 }
 
-// Fast RGB to HSL (H: 0-360, S: 0-1, L: 0-1)
 static inline void rgb2hsl(float r, float g, float b, float& h, float& s, float& l) {
     r /= 255.0f; g /= 255.0f; b /= 255.0f;
     float minV = std::min({r, g, b});
@@ -19,8 +18,7 @@ static inline void rgb2hsl(float r, float g, float b, float& h, float& s, float&
     l = (maxV + minV) / 2.0f;
 
     if (delta <= 1e-4f) {
-        h = 0.0f;
-        s = 0.0f;
+        h = 0.0f; s = 0.0f;
     } else {
         s = (l <= 0.5f) ? (delta / (maxV + minV)) : (delta / (2.0f - maxV - minV));
         if (r >= maxV) h = (g - b) / delta + (g < b ? 6.0f : 0.0f);
@@ -79,8 +77,11 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
 
     const int width = srcInfo.width;
     const int height = srcInfo.height;
-    uint8_t* src = static_cast<uint8_t*>(srcPixels);
-    uint8_t* dst = static_cast<uint8_t*>(dstPixels);
+    const int srcStride = srcInfo.stride;
+    const int dstStride = dstInfo.stride;
+
+    uint8_t* srcBytes = static_cast<uint8_t*>(srcPixels);
+    uint8_t* dstBytes = static_cast<uint8_t*>(dstPixels);
 
     float contrastFactor = (259.0f * (contrast + 255.0f)) / (255.0f * (259.0f - contrast));
     float satFactor = saturation + 1.0f;
@@ -99,14 +100,16 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
     for (int y = 0; y < height; ++y) {
         float dy = y - cy;
         float dySq = dy * dy;
-        int rowIdx = y * width;
+
+        uint8_t* srcRow = srcBytes + (y * srcStride);
+        uint8_t* dstRow = dstBytes + (y * dstStride);
 
         for (int x = 0; x < width; ++x) {
-            int idx = (rowIdx + x) * 4;
-            float r = src[idx] + rWarmth + mTint + brightOffset;
-            float g = src[idx + 1] + gTint + brightOffset;
-            float b = src[idx + 2] + bWarmth + mTint + brightOffset;
-            uint8_t a = src[idx + 3];
+            int px = x * 4;
+            float r = srcRow[px] + rWarmth + mTint + brightOffset;
+            float g = srcRow[px + 1] + gTint + brightOffset;
+            float b = srcRow[px + 2] + bWarmth + mTint + brightOffset;
+            uint8_t a = srcRow[px + 3];
 
             r = contrastFactor * (r - 128.0f) + 128.0f;
             g = contrastFactor * (g - 128.0f) + 128.0f;
@@ -117,20 +120,18 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             g = lum + (g - lum) * satFactor;
             b = lum + (b - lum) * satFactor;
 
-            // Presets
             if (presetId == 1) { // Cinematic
                 if (lum > 128.0f) { r += 20.0f; b -= 15.0f; }
                 else { b += 25.0f; g += 10.0f; r -= 15.0f; }
             } else if (presetId == 2) { // Vintage
                 r += 25.0f; g += 15.0f; b = std::max(b * 0.8f, 30.0f);
-            } else if (presetId == 3) { // Film Noir B&W
+            } else if (presetId == 3) { // Noir
                 float mono = 0.299f * r + 0.587f * g + 0.114f * b;
                 r = g = b = 1.35f * (mono - 128.0f) + 128.0f;
             } else if (presetId == 4) { // Cyberpunk
                 r += 20.0f; b += 40.0f; g = std::min(g, 180.0f);
             }
 
-            // HSL 8-Color Channel Processing
             float hVal, sVal, lVal;
             rgb2hsl(r, g, b, hVal, sVal, lVal);
 
@@ -157,17 +158,16 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 hsl2rgb(hVal, sVal, lVal, r, g, b);
             }
 
-            // Vignette
             if (vignette > 0.001f) {
                 float dx = x - cx;
                 float vFactor = std::max(0.0f, 1.0f - (vignette * ((dx * dx + dySq) / maxDistSq)));
                 r *= vFactor; g *= vFactor; b *= vFactor;
             }
 
-            dst[idx]     = clamp8(r);
-            dst[idx + 1] = clamp8(g);
-            dst[idx + 2] = clamp8(b);
-            dst[idx + 3] = a;
+            dstRow[px]     = clamp8(r);
+            dstRow[px + 1] = clamp8(g);
+            dstRow[px + 2] = clamp8(b);
+            dstRow[px + 3] = a;
         }
     }
 
