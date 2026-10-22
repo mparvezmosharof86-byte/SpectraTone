@@ -14,10 +14,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -42,9 +45,10 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class ModeTab { PRESETS, ADJUST }
+enum class ModeTab { PRESETS, ADJUST, HSL_MIX }
 enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, WARMTH, TINT, VIGNETTE }
 data class FilterPreset(val id: Int, val name: String)
+data class HslColorInfo(val index: Int, val name: String, val color: Color)
 
 @Composable
 fun SpectraToneStudioApp() {
@@ -64,6 +68,22 @@ fun SpectraToneStudioApp() {
     var vignette by remember { mutableFloatStateOf(0.0f) }
     var selectedPresetId by remember { mutableIntStateOf(0) }
 
+    val hslValues = remember { mutableStateListOf(*Array(24) { 0.0f }) }
+    var selectedColorIndex by remember { mutableIntStateOf(0) }
+
+    val colorsList = remember {
+        listOf(
+            HslColorInfo(0, "Red", Color(0xFFFF3333)),
+            HslColorInfo(1, "Orange", Color(0xFFFF9900)),
+            HslColorInfo(2, "Yellow", Color(0xFFFFEE00)),
+            HslColorInfo(3, "Green", Color(0xFF33CC33)),
+            HslColorInfo(4, "Cyan", Color(0xFF00EEEE)),
+            HslColorInfo(5, "Blue", Color(0xFF3366FF)),
+            HslColorInfo(6, "Purple", Color(0xFF9933FF)),
+            HslColorInfo(7, "Magenta", Color(0xFFFF3399))
+        )
+    }
+
     val presets = remember {
         listOf(
             FilterPreset(0, "Original"),
@@ -74,9 +94,7 @@ fun SpectraToneStudioApp() {
         )
     }
 
-    val galleryLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             try {
                 val source = ImageDecoder.createSource(context.contentResolver, it)
@@ -86,27 +104,24 @@ fun SpectraToneStudioApp() {
                 }
                 originalBitmap = bmp
                 editedBitmap = bmp.copy(Bitmap.Config.ARGB_8888, true)
-                brightness = 0.0f
-                contrast = 0.0f
-                saturation = 0.0f
-                warmth = 0.0f
-                tint = 0.0f
-                vignette = 0.0f
-                selectedPresetId = 0
+                brightness = 0.0f; contrast = 0.0f; saturation = 0.0f
+                warmth = 0.0f; tint = 0.0f; vignette = 0.0f; selectedPresetId = 0
+                for (i in 0 until 24) hslValues[i] = 0.0f
             } catch (e: Exception) {
                 Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    LaunchedEffect(brightness, contrast, saturation, warmth, tint, vignette, selectedPresetId, originalBitmap) {
+    LaunchedEffect(brightness, contrast, saturation, warmth, tint, vignette, selectedPresetId, hslValues.toList(), originalBitmap) {
         val src = originalBitmap ?: return@LaunchedEffect
         val dst = editedBitmap ?: return@LaunchedEffect
         withContext(Dispatchers.Default) {
             NativeEngine.applyAdjustments(
                 src, dst,
                 brightness, contrast, saturation,
-                warmth, tint, vignette, selectedPresetId
+                warmth, tint, vignette, selectedPresetId,
+                hslValues.toFloatArray()
             )
         }
     }
@@ -120,7 +135,7 @@ fun SpectraToneStudioApp() {
             ) {
                 Column {
                     Text("SpectraTone", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text("by Nova Studio 24", fontSize = 11.sp, color = Color(0xFF00E676))
+                    Text("Nova Studio 24", fontSize = 11.sp, color = Color(0xFF00E676))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -176,20 +191,23 @@ fun SpectraToneStudioApp() {
                         Button(
                             onClick = { currentMode = ModeTab.ADJUST },
                             shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (currentMode == ModeTab.ADJUST) Color(0xFF00E676) else Color(0xFF22222E)
-                            )
+                            colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.ADJUST) Color(0xFF00E676) else Color(0xFF22222E))
                         ) {
-                            Text("Adjust", fontSize = 12.sp, color = if (currentMode == ModeTab.ADJUST) Color.Black else Color.White)
+                            Text("Adjust", fontSize = 11.sp, color = if (currentMode == ModeTab.ADJUST) Color.Black else Color.White)
+                        }
+                        Button(
+                            onClick = { currentMode = ModeTab.HSL_MIX },
+                            shape = RoundedCornerShape(0.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.HSL_MIX) Color(0xFF00E676) else Color(0xFF22222E))
+                        ) {
+                            Text("Color Mix", fontSize = 11.sp, color = if (currentMode == ModeTab.HSL_MIX) Color.Black else Color.White)
                         }
                         Button(
                             onClick = { currentMode = ModeTab.PRESETS },
                             shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (currentMode == ModeTab.PRESETS) Color(0xFF00E676) else Color(0xFF22222E)
-                            )
+                            colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.PRESETS) Color(0xFF00E676) else Color(0xFF22222E))
                         ) {
-                            Text("Presets", fontSize = 12.sp, color = if (currentMode == ModeTab.PRESETS) Color.Black else Color.White)
+                            Text("Presets", fontSize = 11.sp, color = if (currentMode == ModeTab.PRESETS) Color.Black else Color.White)
                         }
                     }
 
@@ -207,7 +225,6 @@ fun SpectraToneStudioApp() {
                             AdjustTool.VIGNETTE -> 0.0f..1.0f
                             else -> -1.0f..1.0f
                         }
-
                         Slider(
                             value = currentVal,
                             onValueChange = { v ->
@@ -223,29 +240,54 @@ fun SpectraToneStudioApp() {
                             valueRange = range,
                             colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676))
                         )
-
                         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             AdjustTool.entries.forEach { tool ->
                                 Button(
                                     onClick = { selectedTool = tool },
                                     shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (selectedTool == tool) Color(0xFF00E676) else Color(0xFF1E1E28)
-                                    )
+                                    colors = ButtonDefaults.buttonColors(containerColor = if (selectedTool == tool) Color(0xFF00E676) else Color(0xFF1E1E28))
                                 ) {
                                     Text(tool.name, fontSize = 11.sp, color = if (selectedTool == tool) Color.Black else Color.White)
                                 }
                             }
                         }
+                    } else if (currentMode == ModeTab.HSL_MIX) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            colorsList.forEach { c ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(c.color)
+                                        .border(if (selectedColorIndex == c.index) 3.dp else 0.dp, Color.White, CircleShape)
+                                        .clickable { selectedColorIndex = c.index }
+                                )
+                            }
+                        }
+
+                        val hIdx = selectedColorIndex * 3
+                        val sIdx = selectedColorIndex * 3 + 1
+                        val lIdx = selectedColorIndex * 3 + 2
+
+                        Text("HUE SHIFT (${String.format("%.0f", hslValues[hIdx] * 100)})", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Slider(value = hslValues[hIdx], onValueChange = { hslValues[hIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
+                        Text("SATURATION (${String.format("%.0f", hslValues[sIdx] * 100)})", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Slider(value = hslValues[sIdx], onValueChange = { hslValues[sIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
+                        Text("LUMINANCE (${String.format("%.0f", hslValues[lIdx] * 100)})", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Slider(value = hslValues[lIdx], onValueChange = { hslValues[lIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
                     } else {
                         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             presets.forEach { preset ->
                                 Button(
                                     onClick = { selectedPresetId = preset.id },
                                     shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (selectedPresetId == preset.id) Color(0xFF00E676) else Color(0xFF22222E)
-                                    )
+                                    colors = ButtonDefaults.buttonColors(containerColor = if (selectedPresetId == preset.id) Color(0xFF00E676) else Color(0xFF22222E))
                                 ) {
                                     Text(preset.name, fontSize = 12.sp, color = if (selectedPresetId == preset.id) Color.Black else Color.White)
                                 }
