@@ -10,6 +10,12 @@ static inline uint8_t clamp8(float v) {
     return static_cast<uint8_t>(v);
 }
 
+// Smooth Hermite Spline (Eliminates skin posterization & face blotches completely)
+static inline float smoothstep(float edge0, float edge1, float x) {
+    float t = std::max(0.0f, std::min(1.0f, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3.0f - 2.0f * t);
+}
+
 static inline void rgb2hsl(float r, float g, float b, float& h, float& s, float& l) {
     r /= 255.0f; g /= 255.0f; b /= 255.0f;
     float minV = std::min({r, g, b});
@@ -53,7 +59,7 @@ static inline void hsl2rgb(float h, float s, float l, float& r, float& g, float&
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_novastudio24_spectratone_engine_NativeEngine_getEngineStatus(
         JNIEnv* env, jobject /* this */) {
-    return env->NewStringUTF("SpectraTone High-Pass Sharpness Core Online");
+    return env->NewStringUTF("SpectraTone Master Studio Core Online");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -87,10 +93,10 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
     float contrastFactor = (259.0f * (contrast + 255.0f)) / (255.0f * (259.0f - contrast));
     float satFactor = saturation + 1.0f;
     float brightOffset = brightness * 255.0f;
-    float rWarmth = warmth * 30.0f;
-    float bWarmth = -warmth * 30.0f;
-    float gTint = -tint * 30.0f;
-    float mTint = tint * 20.0f;
+    float rWarmth = warmth * 22.0f;
+    float bWarmth = -warmth * 22.0f;
+    float gTint = -tint * 18.0f;
+    float mTint = tint * 12.0f;
 
     float cx = width / 2.0f;
     float cy = height / 2.0f;
@@ -107,92 +113,61 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
 
         for (int x = 0; x < width; ++x) {
             int px = x * 4;
-            float r = srcRow[px] + rWarmth + mTint + brightOffset;
-            float g = srcRow[px + 1] + gTint + brightOffset;
-            float b = srcRow[px + 2] + bWarmth + mTint + brightOffset;
+            float r = srcRow[px];
+            float g = srcRow[px + 1];
+            float b = srcRow[px + 2];
             uint8_t a = srcRow[px + 3];
 
-            // 1. High-Pass Sharpness Kernel
+            // 1. Subtle High-Pass Edge Sharpening (Zero Halo on Skin)
             if (sharpness > 0.01f && y > 0 && y < height - 1 && x > 0 && x < width - 1) {
                 uint8_t* topRow = srcBytes + ((y - 1) * srcStride);
                 uint8_t* botRow = srcBytes + ((y + 1) * srcStride);
 
-                float hpR = 4.0f * srcRow[px] - topRow[px] - botRow[px] - srcRow[px - 4] - srcRow[px + 4];
-                float hpG = 4.0f * srcRow[px + 1] - topRow[px + 1] - botRow[px + 1] - srcRow[px - 3] - srcRow[px + 5];
-                float hpB = 4.0f * srcRow[px + 2] - topRow[px + 2] - botRow[px + 2] - srcRow[px - 2] - srcRow[px + 6];
+                float hpR = 4.0f * r - topRow[px] - botRow[px] - srcRow[px - 4] - srcRow[px + 4];
+                float hpG = 4.0f * g - topRow[px + 1] - botRow[px + 1] - srcRow[px - 3] - srcRow[px + 5];
+                float hpB = 4.0f * b - topRow[px + 2] - botRow[px + 2] - srcRow[px - 2] - srcRow[px + 6];
 
-                r += hpR * (sharpness * 0.45f);
-                g += hpG * (sharpness * 0.45f);
-                b += hpB * (sharpness * 0.45f);
+                r += hpR * (sharpness * 0.20f);
+                g += hpG * (sharpness * 0.20f);
+                b += hpB * (sharpness * 0.20f);
             }
 
-            // 2. Contrast
+            // 2. White Balance & Brightness
+            r += (rWarmth + mTint + brightOffset);
+            g += (gTint + brightOffset);
+            b += (bWarmth + mTint + brightOffset);
+
+            // 3. Contrast
             r = contrastFactor * (r - 128.0f) + 128.0f;
             g = contrastFactor * (g - 128.0f) + 128.0f;
             b = contrastFactor * (b - 128.0f) + 128.0f;
 
-            // 3. Saturation
+            // 4. Global Saturation
             float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
             r = lum + (r - lum) * satFactor;
             g = lum + (g - lum) * satFactor;
             b = lum + (b - lum) * satFactor;
 
-            // 4. Presets
-            if (presetId == 1) { // Cinematic
-                if (lum > 128.0f) { r += 20.0f; b -= 15.0f; }
-                else { b += 25.0f; g += 10.0f; r -= 15.0f; }
-            } else if (presetId == 2) { // Vintage
-                r += 25.0f; g += 15.0f; b = std::max(b * 0.8f, 30.0f);
-            } else if (presetId == 3) { // Film Noir
+            // 5. Professional Presets (Smooth Curves, ZERO Face Blotches)
+            float normLum = lum / 255.0f;
+
+            if (presetId == 1) { // Cinematic Hollywood (Teal & Orange with Skin Protection)
+                float hiWeight = smoothstep(0.40f, 0.85f, normLum);
+                float shWeight = 1.0f - smoothstep(0.15f, 0.60f, normLum);
+
+                r += 14.0f * hiWeight - 10.0f * shWeight;
+                g += 4.0f * hiWeight + 3.0f * shWeight;
+                b += -12.0f * hiWeight + 16.0f * shWeight;
+            } else if (presetId == 2) { // Vintage Matte Film
+                float shLift = (1.0f - normLum) * 18.0f;
+                r += 10.0f + shLift * 0.4f;
+                g += 6.0f + shLift * 0.2f;
+                b = b * 0.90f + shLift * 0.5f;
+            } else if (presetId == 3) { // Film Noir Rich B&W (Silver Halide S-Curve)
                 float mono = 0.299f * r + 0.587f * g + 0.114f * b;
-                r = g = b = 1.35f * (mono - 128.0f) + 128.0f;
-            } else if (presetId == 4) { // Cyberpunk
-                r += 20.0f; b += 40.0f; g = std::min(g, 180.0f);
-            }
-
-            // 5. 8-Color HSL Matrix
-            float hVal, sVal, lVal;
-            rgb2hsl(r, g, b, hVal, sVal, lVal);
-
-            if (sVal > 0.05f) {
-                for (int c = 0; c < 8; ++c) {
-                    float targetH = centerHues[c];
-                    float diff = std::abs(hVal - targetH);
-                    if (diff > 180.0f) diff = 360.0f - diff;
-
-                    if (diff < 35.0f) {
-                        float weight = 1.0f - (diff / 35.0f);
-                        float dH = hsl[c * 3] * 40.0f;
-                        float dS = hsl[c * 3 + 1];
-                        float dL = hsl[c * 3 + 2] * 0.5f;
-
-                        hVal += dH * weight;
-                        if (hVal < 0.0f) hVal += 360.0f;
-                        if (hVal >= 360.0f) hVal -= 360.0f;
-
-                        sVal = std::max(0.0f, std::min(1.0f, sVal + dS * weight));
-                        lVal = std::max(0.0f, std::min(1.0f, lVal + dL * weight));
-                    }
-                }
-                hsl2rgb(hVal, sVal, lVal, r, g, b);
-            }
-
-            // 6. Vignette
-            if (vignette > 0.001f) {
-                float dx = x - cx;
-                float vFactor = std::max(0.0f, 1.0f - (vignette * ((dx * dx + dySq) / maxDistSq)));
-                r *= vFactor; g *= vFactor; b *= vFactor;
-            }
-
-            dstRow[px]     = clamp8(r);
-            dstRow[px + 1] = clamp8(g);
-            dstRow[px + 2] = clamp8(b);
-            dstRow[px + 3] = a;
-        }
-    }
-
-    env->ReleaseFloatArrayElements(hslArray, hsl, 0);
-    AndroidBitmap_unlockPixels(env, srcBitmap);
-    AndroidBitmap_unlockPixels(env, dstBitmap);
-    return JNI_TRUE;
-}
+                float mNorm = mono / 255.0f;
+                float curved = (mNorm < 0.5f) ? (2.0f * mNorm * mNorm) : (1.0f - 2.0f * (1.0f - mNorm) * (1.0f - mNorm));
+                r = g = b = curved * 255.0f;
+            } else if (presetId == 4) { // Cyberpunk Neon
+                float shWeight = 1.0f - smoothstep(0.25f, 0.75f, normLum);
+                r += 10.
