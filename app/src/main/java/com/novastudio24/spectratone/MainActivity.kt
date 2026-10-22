@@ -12,7 +12,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,6 +32,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
@@ -67,6 +70,7 @@ enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM, AI_STUDIO }
 enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, SHARPNESS, WARMTH, TINT, VIGNETTE }
 data class FilterPreset(val id: Int, val name: String)
 data class HslColorInfo(val index: Int, val name: String, val color: Color)
+data class BgColorChoice(val name: String, val color: Int?, val isTransparent: Boolean = false)
 
 @Composable
 fun SpectraToneStudioApp() {
@@ -76,7 +80,7 @@ fun SpectraToneStudioApp() {
     var masterBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var previewOriginal by remember { mutableStateOf<Bitmap?>(null) }
     var previewEdited by remember { mutableStateOf<Bitmap?>(null) }
-    var cutoutBitmap by remember { mutableStateOf<Bitmap?>(null) } // Transparent Cutout
+    var cutoutBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var showOriginal by remember { mutableStateOf(false) }
     var isAiProcessing by remember { mutableStateOf(false) }
     var renderVersion by remember { mutableIntStateOf(0) }
@@ -117,6 +121,17 @@ fun SpectraToneStudioApp() {
             FilterPreset(2, "Vintage"),
             FilterPreset(3, "Film Noir"),
             FilterPreset(4, "Cyberpunk")
+        )
+    }
+
+    val bgChoices = remember {
+        listOf(
+            BgColorChoice("Transparent", null, true),
+            BgColorChoice("Passport White", android.graphics.Color.WHITE),
+            BgColorChoice("Embassy Blue", android.graphics.Color.parseColor("#1565C0")),
+            BgColorChoice("Soft Gray", android.graphics.Color.parseColor("#E0E0E0")),
+            BgColorChoice("Studio Red", android.graphics.Color.parseColor("#B71C1C")),
+            BgColorChoice("Pitch Black", android.graphics.Color.BLACK)
         )
     }
 
@@ -174,26 +189,42 @@ fun SpectraToneStudioApp() {
         renderVersion++
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0D11)) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF09090D)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header
+
+            // Top Studio Header
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF111118))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
-                    Text("SpectraTone", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text("Nova Studio 24", fontSize = 11.sp, color = Color(0xFF00E676))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF00E676))
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text("SpectraTone", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                        Text("PRO STUDIO ENGINE", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676), letterSpacing = 1.sp)
+                    }
                 }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { galleryLauncher.launch("image/*") },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF242430)),
-                        shape = RoundedCornerShape(10.dp)
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E1E2A)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Text("Open", fontSize = 12.sp, color = Color.White)
+                        Text(if (previewOriginal == null) "Open Photo" else "Change", fontSize = 12.sp, color = Color.White)
                     }
+
                     if (masterBitmap != null) {
                         Button(
                             onClick = {
@@ -206,70 +237,170 @@ fun SpectraToneStudioApp() {
                                     selectedPresetId, hslValues.toFloatArray()
                                 )
                                 saveBitmapToGallery(context, fullOutput)
-                                Toast.makeText(context, "Saved at 100% Original Resolution!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Saved to Gallery in 100% Ultra Quality!", Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                         ) {
-                            Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                            Text("Export", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                         }
                     }
                 }
             }
 
-            // Preview Canvas
+            // Canvas & Empty State
             Box(
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF16161E)),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF101017)),
                 contentAlignment = Alignment.Center
             ) {
                 if (previewOriginal == null) {
-                    Button(onClick = { galleryLauncher.launch("image/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1F1F2C))) {
-                        Text("Tap to Choose a Photo", color = Color(0xFF00E676), fontSize = 14.sp)
-                    }
-                } else {
-                    key(renderVersion, showOriginal) {
-                        val displayBmp = if (showOriginal) previewOriginal else previewEdited
-                        displayBmp?.let {
-                            Image(
-                                bitmap = it.asImageBitmap(),
-                                contentDescription = "Preview",
-                                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                                    detectTapGestures(onPress = { showOriginal = true; tryAwaitRelease(); showOriginal = false })
-                                }
-                            )
-                        }
-                    }
-
-                    if (isAiProcessing) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
                         Box(
-                            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f)),
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(CircleShape)
+                                .background(Brush.radialGradient(listOf(Color(0xFF00E676).copy(0.3f), Color.Transparent))),
                             contentAlignment = Alignment.Center
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                CircularProgressIndicator(color = Color(0xFF00E676))
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text("Nvidia GPU Processing Cutout...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF171724))
+                                    .border(2.dp, Color(0xFF00E676), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("+", fontSize = 28.sp, color = Color(0xFF00E676), fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("No Photo Loaded", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Select a photo to unleash C++ Color Science & AI Cutout Engine", fontSize = 12.sp, color = Color.Gray, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Button(
+                            onClick = { galleryLauncher.launch("image/*") },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
+                        ) {
+                            Text("Import Photo from Gallery", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                        }
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .drawBehind {
+                                val checkSize = 24f
+                                val numCols = (size.width / checkSize).toInt() + 1
+                                val numRows = (size.height / checkSize).toInt() + 1
+                                val c1 = androidx.compose.ui.graphics.Color(0xFF181822)
+                                val c2 = androidx.compose.ui.graphics.Color(0xFF12121A)
+
+                                for (c in 0 until numCols) {
+                                    for (r in 0 until numRows) {
+                                        drawRect(
+                                            color = if ((c + r) % 2 == 0) c1 else c2,
+                                            topLeft = Offset(c * checkSize, r * checkSize),
+                                            size = Size(checkSize, checkSize)
+                                        )
+                                    }
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        key(renderVersion, showOriginal) {
+                            val displayBmp = if (showOriginal) previewOriginal else previewEdited
+                            displayBmp?.let {
+                                Image(
+                                    bitmap = it.asImageBitmap(),
+                                    contentDescription = "Preview",
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .pointerInput(Unit) {
+                                            detectTapGestures(onPress = { showOriginal = true; tryAwaitRelease(); showOriginal = false })
+                                        }
+                                )
+                            }
+                        }
+
+                        Surface(
+                            color = Color.Black.copy(0.7f),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = if (showOriginal) "SHOWING ORIGINAL" else "HOLD TO COMPARE",
+                                color = if (showOriginal) Color(0xFFFFD54F) else Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        if (isAiProcessing) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.82f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    CircularProgressIndicator(color = Color(0xFF00E676))
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                    Text("Nvidia RTX GPU Cutting Background...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text("Edge Feathering in progress", color = Color.Gray, fontSize = 11.sp)
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // Controls
+            // Bottom Editing Deck
             if (previewOriginal != null) {
-                Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF14141B)).padding(14.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF101016))
+                        .padding(horizontal = 14.dp, vertical = 12.dp)
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(bottom = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         ModeTab.values().forEach { tab ->
-                            Button(
-                                onClick = { currentMode = tab },
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == tab) Color(0xFF00E676) else Color(0xFF22222E)),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            val isSelected = currentMode == tab
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Color(0xFF00E676) else Color(0xFF1B1B26))
+                                    .clickable { currentMode = tab }
+                                    .padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
-                                Text(tab.name.replace("_", " "), fontSize = 11.sp, color = if (currentMode == tab) Color.Black else Color.White)
+                                Text(
+                                    text = tab.name.replace("_", " "),
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) Color.Black else Color(0xFFB0B0C0)
+                                )
                             }
                         }
                     }
@@ -290,6 +421,19 @@ fun SpectraToneStudioApp() {
                                 AdjustTool.SHARPNESS, AdjustTool.VIGNETTE -> 0.0f..1.0f
                                 else -> -1.0f..1.0f
                             }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(selectedTool.name, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676))
+                                Text(
+                                    String.format("%.0f", if (selectedTool == AdjustTool.CONTRAST) currentVal else currentVal * 100),
+                                    fontSize = 11.sp,
+                                    color = Color.White
+                                )
+                            }
+
                             Slider(
                                 value = currentVal,
                                 onValueChange = { v ->
@@ -306,24 +450,45 @@ fun SpectraToneStudioApp() {
                                 valueRange = range,
                                 colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676))
                             )
-                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 AdjustTool.values().forEach { tool ->
-                                    Button(
-                                        onClick = { selectedTool = tool },
-                                        shape = RoundedCornerShape(8.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = if (selectedTool == tool) Color(0xFF00E676) else Color(0xFF1E1E28))
+                                    val isToolSel = selectedTool == tool
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(if (isToolSel) Color(0xFF00E676).copy(0.2f) else Color(0xFF171720))
+                                            .border(1.dp, if (isToolSel) Color(0xFF00E676) else Color.Transparent, RoundedCornerShape(6.dp))
+                                            .clickable { selectedTool = tool }
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
                                     ) {
-                                        Text(tool.name, fontSize = 11.sp, color = if (selectedTool == tool) Color.Black else Color.White)
+                                        Text(tool.name, fontSize = 10.sp, color = if (isToolSel) Color(0xFF00E676) else Color.White)
                                     }
                                 }
                             }
                         }
 
                         ModeTab.HSL_MIX -> {
-                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(bottom = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
                                 colorsList.forEach { c ->
                                     Box(
-                                        modifier = Modifier.size(32.dp).clip(CircleShape).background(c.color).border(if (selectedColorIndex == c.index) 3.dp else 0.dp, Color.White, CircleShape).clickable { selectedColorIndex = c.index }
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(CircleShape)
+                                            .background(c.color)
+                                            .border(if (selectedColorIndex == c.index) 3.dp else 0.dp, Color.White, CircleShape)
+                                            .clickable { selectedColorIndex = c.index }
                                     )
                                 }
                             }
@@ -331,34 +496,51 @@ fun SpectraToneStudioApp() {
                             val sIdx = selectedColorIndex * 3 + 1
                             val lIdx = selectedColorIndex * 3 + 2
 
-                            Text("HUE SHIFT", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Text("HUE SHIFT", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                             Slider(value = hslValues[hIdx], onValueChange = { hslValues[hIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
 
-                            Text("SATURATION", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Text("SATURATION", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                             Slider(value = hslValues[sIdx], onValueChange = { hslValues[sIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
 
-                            Text("LUMINANCE", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Text("LUMINANCE", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                             Slider(value = hslValues[lIdx], onValueChange = { hslValues[lIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
                         }
 
                         ModeTab.PRESETS -> {
-                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 presets.forEach { preset ->
-                                    Button(onClick = { selectedPresetId = preset.id }, shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = if (selectedPresetId == preset.id) Color(0xFF00E676) else Color(0xFF22222E))) {
-                                        Text(preset.name, fontSize = 12.sp, color = if (selectedPresetId == preset.id) Color.Black else Color.White)
+                                    val isPreSel = selectedPresetId == preset.id
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isPreSel) Color(0xFF00E676) else Color(0xFF1A1A24))
+                                            .clickable { selectedPresetId = preset.id }
+                                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                                    ) {
+                                        Text(preset.name, fontSize = 12.sp, fontWeight = if (isPreSel) FontWeight.Bold else FontWeight.Medium, color = if (isPreSel) Color.Black else Color.White)
                                     }
                                 }
                             }
                         }
 
                         ModeTab.TRANSFORM -> {
-                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 Button(onClick = {
                                     masterBitmap?.let {
                                         val m = Matrix().apply { postRotate(90f) }
                                         setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
                                     }
-                                }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A1A24))) {
                                     Text("Rotate 90°", fontSize = 11.sp, color = Color.White)
                                 }
                                 Button(onClick = {
@@ -366,16 +548,16 @@ fun SpectraToneStudioApp() {
                                         val m = Matrix().apply { postScale(-1f, 1f, it.width / 2f, it.height / 2f) }
                                         setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
                                     }
-                                }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A1A24))) {
                                     Text("Flip (Mirror)", fontSize = 11.sp, color = Color.White)
                                 }
-                                Button(onClick = { cropToAspectRatio(masterBitmap, 1.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Button(onClick = { cropToAspectRatio(masterBitmap, 1.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A1A24))) {
                                     Text("1:1 (Square)", fontSize = 11.sp, color = Color(0xFF00E676))
                                 }
-                                Button(onClick = { cropToAspectRatio(masterBitmap, 4.0f / 5.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Button(onClick = { cropToAspectRatio(masterBitmap, 4.0f / 5.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A1A24))) {
                                     Text("4:5 (Insta)", fontSize = 11.sp, color = Color(0xFF00E676))
                                 }
-                                Button(onClick = { cropToAspectRatio(masterBitmap, 16.0f / 9.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Button(onClick = { cropToAspectRatio(masterBitmap, 16.0f / 9.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1A1A24))) {
                                     Text("16:9 (Landscape)", fontSize = 11.sp, color = Color(0xFF00E676))
                                 }
                             }
@@ -384,8 +566,11 @@ fun SpectraToneStudioApp() {
                         ModeTab.AI_STUDIO -> {
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Button(
                                         onClick = {
@@ -398,50 +583,47 @@ fun SpectraToneStudioApp() {
                                                         setupNewBitmap(cutout)
                                                         Toast.makeText(context, "AI Cutout Successful!", Toast.LENGTH_SHORT).show()
                                                     } else {
-                                                        Toast.makeText(context, "Connecting to GPU... Try once more.", Toast.LENGTH_LONG).show()
+                                                        Toast.makeText(context, "Connecting to GPU... Try once more in a moment.", Toast.LENGTH_LONG).show()
                                                     }
                                                     isAiProcessing = false
                                                 }
                                             }
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
-                                        shape = RoundedCornerShape(10.dp)
+                                        shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Text("AI Cutout", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                                        Text("AI Cutout (GPU)", fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
                                     }
 
                                     if (cutoutBitmap != null) {
-                                        Button(
-                                            onClick = {
-                                                val whiteBmp = applyBackgroundColor(cutoutBitmap!!, android.graphics.Color.WHITE)
-                                                setupNewBitmap(whiteBmp)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-                                            shape = RoundedCornerShape(10.dp)
-                                        ) {
-                                            Text("Passport White", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                val blueBmp = applyBackgroundColor(cutoutBitmap!!, android.graphics.Color.parseColor("#1E88E5"))
-                                                setupNewBitmap(blueBmp)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E88E5)),
-                                            shape = RoundedCornerShape(10.dp)
-                                        ) {
-                                            Text("Visa Blue", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
-                                        }
-
-                                        Button(
-                                            onClick = {
-                                                val blackBmp = applyBackgroundColor(cutoutBitmap!!, android.graphics.Color.BLACK)
-                                                setupNewBitmap(blackBmp)
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF212121)),
-                                            shape = RoundedCornerShape(10.dp)
-                                        ) {
-                                            Text("Studio Black", fontSize = 12.sp, color = Color.White)
+                                        bgChoices.forEach { choice ->
+                                            Button(
+                                                onClick = {
+                                                    val result = if (choice.isTransparent) {
+                                                        cutoutBitmap!!
+                                                    } else {
+                                                        applyBackgroundColor(cutoutBitmap!!, choice.color!!)
+                                                    }
+                                                    setupNewBitmap(result)
+                                                },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = when (choice.name) {
+                                                        "Passport White" -> Color.White
+                                                        "Embassy Blue" -> Color(0xFF1565C0)
+                                                        "Studio Red" -> Color(0xFFB71C1C)
+                                                        "Soft Gray" -> Color(0xFFE0E0E0)
+                                                        else -> Color(0xFF22222E)
+                                                    }
+                                                ),
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Text(
+                                                    choice.name,
+                                                    fontSize = 11.sp,
+                                                    color = if (choice.name == "Passport White" || choice.name == "Soft Gray") Color.Black else Color.White,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -454,7 +636,6 @@ fun SpectraToneStudioApp() {
     }
 }
 
-// Applies Solid Backgrounds (White Passport, Blue Visa, Black Studio) behind AI Cutout
 fun applyBackgroundColor(cutout: Bitmap, color: Int): Bitmap {
     val result = Bitmap.createBitmap(cutout.width, cutout.height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(result)
@@ -463,11 +644,9 @@ fun applyBackgroundColor(cutout: Bitmap, color: Int): Bitmap {
     return result
 }
 
-// Connects directly to mdParvez5/spectratone-ai Hugging Face Gradio API
 suspend fun callGradioAiCutout(bitmap: Bitmap): Bitmap? = withContext(Dispatchers.IO) {
     try {
         val stream = ByteArrayOutputStream()
-        // Send a fast preview to GPU (Max 1024px) for blazing fast transmission
         val maxDim = 1024
         val scale = if (max(bitmap.width, bitmap.height) > maxDim) maxDim.toFloat() / max(bitmap.width, bitmap.height) else 1.0f
         val scaled = if (scale < 1.0f) Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true) else bitmap
@@ -479,7 +658,6 @@ suspend fun callGradioAiCutout(bitmap: Bitmap): Bitmap? = withContext(Dispatcher
             .readTimeout(90, TimeUnit.SECONDS)
             .build()
 
-        // 1. Upload to Gradio Space
         val uploadUrl = "https://mdparvez5-spectratone-ai.hf.space/gradio_api/upload"
         val uploadBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -494,7 +672,6 @@ suspend fun callGradioAiCutout(bitmap: Bitmap): Bitmap? = withContext(Dispatcher
         if (uploadJson.length() == 0) return@withContext null
         val filePath = uploadJson.getString(0)
 
-        // 2. Trigger GPU Prediction
         val predictUrl = "https://mdparvez5-spectratone-ai.hf.space/gradio_api/call/predict"
         val payload = JSONObject().apply {
             put("data", JSONArray().put(JSONObject().apply {
@@ -511,7 +688,6 @@ suspend fun callGradioAiCutout(bitmap: Bitmap): Bitmap? = withContext(Dispatcher
         val eventId = JSONObject(predictResp.body?.string() ?: "{}").optString("event_id", "")
         if (eventId.isEmpty()) return@withContext null
 
-        // 3. Get Result Event Stream
         val resultUrl = "https://mdparvez5-spectratone-ai.hf.space/gradio_api/call/predict/$eventId"
         val resultReq = Request.Builder().url(resultUrl).get().build()
         val streamResp = client.newCall(resultReq).execute()
