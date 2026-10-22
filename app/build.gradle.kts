@@ -53,4 +53,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    
+    // Fast Network Engine for AI Server
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
