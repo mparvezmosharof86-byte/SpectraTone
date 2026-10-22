@@ -3,13 +3,16 @@ package com.novastudio24.spectratone
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -46,6 +49,8 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
@@ -58,7 +63,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM, AI_TOOLS }
+enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM, AI_STUDIO }
 enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, SHARPNESS, WARMTH, TINT, VIGNETTE }
 data class FilterPreset(val id: Int, val name: String)
 data class HslColorInfo(val index: Int, val name: String, val color: Color)
@@ -71,6 +76,7 @@ fun SpectraToneStudioApp() {
     var masterBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var previewOriginal by remember { mutableStateOf<Bitmap?>(null) }
     var previewEdited by remember { mutableStateOf<Bitmap?>(null) }
+    var cutoutBitmap by remember { mutableStateOf<Bitmap?>(null) } // Transparent Cutout
     var showOriginal by remember { mutableStateOf(false) }
     var isAiProcessing by remember { mutableStateOf(false) }
     var renderVersion by remember { mutableIntStateOf(0) }
@@ -145,6 +151,7 @@ fun SpectraToneStudioApp() {
                 brightness = 0.0f; contrast = 0.0f; saturation = 0.0f; sharpness = 0.0f
                 warmth = 0.0f; tint = 0.0f; vignette = 0.0f; selectedPresetId = 0
                 for (i in 0 until 24) hslValues[i] = 0.0f
+                cutoutBitmap = null
                 setupNewBitmap(bmp)
             } catch (e: Exception) {
                 Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -169,7 +176,7 @@ fun SpectraToneStudioApp() {
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0D11)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Top Bar
+            // Header
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -235,23 +242,22 @@ fun SpectraToneStudioApp() {
 
                     if (isAiProcessing) {
                         Box(
-                            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)),
+                            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 CircularProgressIndicator(color = Color(0xFF00E676))
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text("AI Removing Background...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Text("Nvidia GPU Processing Cutout...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                             }
                         }
                     }
                 }
             }
 
-            // Bottom Controls Area
+            // Controls
             if (previewOriginal != null) {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF14141B)).padding(14.dp)) {
-                    // Main Tabs
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -375,28 +381,69 @@ fun SpectraToneStudioApp() {
                             }
                         }
 
-                        ModeTab.AI_TOOLS -> {
-                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = {
-                                        masterBitmap?.let { bmp ->
-                                            isAiProcessing = true
-                                            coroutineScope.launch {
-                                                val cutout = removeBackgroundWithAi(bmp)
-                                                if (cutout != null) {
-                                                    setupNewBitmap(cutout)
-                                                    Toast.makeText(context, "AI Background Removed Successfully!", Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    Toast.makeText(context, "AI Service starting up... Please try again in a moment.", Toast.LENGTH_LONG).show()
-                                                }
-                                                isAiProcessing = false
-                                            }
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
-                                    shape = RoundedCornerShape(10.dp)
+                        ModeTab.AI_STUDIO -> {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text("AI Remove Background", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                                    Button(
+                                        onClick = {
+                                            masterBitmap?.let { bmp ->
+                                                isAiProcessing = true
+                                                coroutineScope.launch {
+                                                    val cutout = callGradioAiCutout(bmp)
+                                                    if (cutout != null) {
+                                                        cutoutBitmap = cutout
+                                                        setupNewBitmap(cutout)
+                                                        Toast.makeText(context, "AI Cutout Successful!", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        Toast.makeText(context, "Connecting to GPU... Try once more.", Toast.LENGTH_LONG).show()
+                                                    }
+                                                    isAiProcessing = false
+                                                }
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("AI Cutout", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    if (cutoutBitmap != null) {
+                                        Button(
+                                            onClick = {
+                                                val whiteBmp = applyBackgroundColor(cutoutBitmap!!, android.graphics.Color.WHITE)
+                                                setupNewBitmap(whiteBmp)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Text("Passport White", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                val blueBmp = applyBackgroundColor(cutoutBitmap!!, android.graphics.Color.parseColor("#1E88E5"))
+                                                setupNewBitmap(blueBmp)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E88E5)),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Text("Visa Blue", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                val blackBmp = applyBackgroundColor(cutoutBitmap!!, android.graphics.Color.BLACK)
+                                                setupNewBitmap(blackBmp)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF212121)),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Text("Studio Black", fontSize = 12.sp, color = Color.White)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -407,40 +454,97 @@ fun SpectraToneStudioApp() {
     }
 }
 
-// Background Removal AI Engine Connector (OkHttp)
-suspend fun removeBackgroundWithAi(bitmap: Bitmap): Bitmap? = withContext(Dispatchers.IO) {
+// Applies Solid Backgrounds (White Passport, Blue Visa, Black Studio) behind AI Cutout
+fun applyBackgroundColor(cutout: Bitmap, color: Int): Bitmap {
+    val result = Bitmap.createBitmap(cutout.width, cutout.height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(result)
+    canvas.drawColor(color)
+    canvas.drawBitmap(cutout, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG))
+    return result
+}
+
+// Connects directly to mdParvez5/spectratone-ai Hugging Face Gradio API
+suspend fun callGradioAiCutout(bitmap: Bitmap): Bitmap? = withContext(Dispatchers.IO) {
     try {
         val stream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, 90, stream)
-        val byteArray = stream.toByteArray()
+        // Send a fast preview to GPU (Max 1024px) for blazing fast transmission
+        val maxDim = 1024
+        val scale = if (max(bitmap.width, bitmap.height) > maxDim) maxDim.toFloat() / max(bitmap.width, bitmap.height) else 1.0f
+        val scaled = if (scale < 1.0f) Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true) else bitmap
+        scaled.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+        val imageBytes = stream.toByteArray()
 
         val client = OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
+            .connectTimeout(90, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
             .build()
 
-        val requestBody = MultipartBody.Builder()
+        // 1. Upload to Gradio Space
+        val uploadUrl = "https://mdparvez5-spectratone-ai.hf.space/gradio_api/upload"
+        val uploadBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
-            .addFormDataPart(
-                "file", "image.png",
-                byteArray.toRequestBody("image/png".toMediaTypeOrNull())
-            )
+            .addFormDataPart("files", "input.jpg", imageBytes.toRequestBody("image/jpeg".toMediaTypeOrNull()))
             .build()
 
-        // SpectraTone Free AI Endpoint (FastAPI RMBG)
-        val request = Request.Builder()
-            .url("https://spectratone-ai.hf.space/remove-bg")
-            .post(requestBody)
-            .build()
+        val uploadRequest = Request.Builder().url(uploadUrl).post(uploadBody).build()
+        val uploadResp = client.newCall(uploadRequest).execute()
+        if (!uploadResp.isSuccessful) return@withContext null
 
-        val response = client.newCall(request).execute()
-        if (response.isSuccessful) {
-            response.body?.byteStream()?.use { byteStream ->
-                BitmapFactory.decodeStream(byteStream)
-            }
-        } else {
-            null
+        val uploadJson = JSONArray(uploadResp.body?.string() ?: "[]")
+        if (uploadJson.length() == 0) return@withContext null
+        val filePath = uploadJson.getString(0)
+
+        // 2. Trigger GPU Prediction
+        val predictUrl = "https://mdparvez5-spectratone-ai.hf.space/gradio_api/call/predict"
+        val payload = JSONObject().apply {
+            put("data", JSONArray().put(JSONObject().apply {
+                put("path", filePath)
+            }))
         }
+
+        val predictReq = Request.Builder()
+            .url(predictUrl)
+            .post(payload.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+
+        val predictResp = client.newCall(predictReq).execute()
+        val eventId = JSONObject(predictResp.body?.string() ?: "{}").optString("event_id", "")
+        if (eventId.isEmpty()) return@withContext null
+
+        // 3. Get Result Event Stream
+        val resultUrl = "https://mdparvez5-spectratone-ai.hf.space/gradio_api/call/predict/$eventId"
+        val resultReq = Request.Builder().url(resultUrl).get().build()
+        val streamResp = client.newCall(resultReq).execute()
+
+        var resultPath = ""
+        streamResp.body?.source()?.let { source ->
+            while (!source.exhausted()) {
+                val line = source.readUtf8Line() ?: break
+                if (line.startsWith("data:")) {
+                    val dataJson = line.substring(5).trim()
+                    if (dataJson.startsWith("[")) {
+                        val arr = JSONArray(dataJson)
+                        if (arr.length() > 0) {
+                            val obj = arr.optJSONObject(0)
+                            if (obj != null && obj.has("path")) {
+                                resultPath = obj.getString("path")
+                            } else if (arr.optString(0).isNotEmpty()) {
+                                resultPath = arr.getString(0)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (resultPath.isNotEmpty()) {
+            val fileDownloadUrl = if (resultPath.startsWith("http")) resultPath else "https://mdparvez5-spectratone-ai.hf.space/gradio_api/file=$resultPath"
+            val fileReq = Request.Builder().url(fileDownloadUrl).get().build()
+            val fileResp = client.newCall(fileReq).execute()
+            if (fileResp.isSuccessful) {
+                fileResp.body?.byteStream()?.use { BitmapFactory.decodeStream(it) }
+            } else null
+        } else null
     } catch (e: Exception) {
         null
     }
