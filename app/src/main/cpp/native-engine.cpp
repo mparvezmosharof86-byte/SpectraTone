@@ -10,7 +10,7 @@ static inline uint8_t clamp8(float v) {
     return static_cast<uint8_t>(v);
 }
 
-// Smooth Hermite Spline (Eliminates skin posterization & face blotches completely)
+// Smooth Hermite Spline (Eliminates skin posterization & face blotches)
 static inline float smoothstep(float edge0, float edge1, float x) {
     float t = std::max(0.0f, std::min(1.0f, (x - edge0) / (edge1 - edge0)));
     return t * t * (3.0f - 2.0f * t);
@@ -118,7 +118,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             float b = srcRow[px + 2];
             uint8_t a = srcRow[px + 3];
 
-            // 1. Subtle High-Pass Edge Sharpening (Zero Halo on Skin)
+            // 1. High-Pass Edge Sharpening (Zero Halo on Skin)
             if (sharpness > 0.01f && y > 0 && y < height - 1 && x > 0 && x < width - 1) {
                 uint8_t* topRow = srcBytes + ((y - 1) * srcStride);
                 uint8_t* botRow = srcBytes + ((y + 1) * srcStride);
@@ -170,4 +170,53 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 r = g = b = curved * 255.0f;
             } else if (presetId == 4) { // Cyberpunk Neon
                 float shWeight = 1.0f - smoothstep(0.25f, 0.75f, normLum);
-                r += 10.
+                r += 10.0f * (1.0f - shWeight);
+                b += 22.0f * shWeight;
+            }
+
+            // 6. 8-Color HSL Matrix (Continuous smooth hue window)
+            float hVal, sVal, lVal;
+            rgb2hsl(r, g, b, hVal, sVal, lVal);
+
+            if (sVal > 0.05f) {
+                for (int c = 0; c < 8; ++c) {
+                    float targetH = centerHues[c];
+                    float diff = std::abs(hVal - targetH);
+                    if (diff > 180.0f) diff = 360.0f - diff;
+
+                    if (diff < 32.0f) {
+                        float weight = 1.0f - (diff / 32.0f);
+                        float dH = hsl[c * 3] * 35.0f;
+                        float dS = hsl[c * 3 + 1] * 0.8f;
+                        float dL = hsl[c * 3 + 2] * 0.4f;
+
+                        hVal += dH * weight;
+                        if (hVal < 0.0f) hVal += 360.0f;
+                        if (hVal >= 360.0f) hVal -= 360.0f;
+
+                        sVal = std::max(0.0f, std::min(1.0f, sVal + dS * weight));
+                        lVal = std::max(0.0f, std::min(1.0f, lVal + dL * weight));
+                    }
+                }
+                hsl2rgb(hVal, sVal, lVal, r, g, b);
+            }
+
+            // 7. Natural Vignette
+            if (vignette > 0.001f) {
+                float dx = x - cx;
+                float vFactor = std::max(0.0f, 1.0f - (vignette * ((dx * dx + dySq) / maxDistSq)));
+                r *= vFactor; g *= vFactor; b *= vFactor;
+            }
+
+            dstRow[px]     = clamp8(r);
+            dstRow[px + 1] = clamp8(g);
+            dstRow[px + 2] = clamp8(b);
+            dstRow[px + 3] = a;
+        }
+    }
+
+    env->ReleaseFloatArrayElements(hslArray, hsl, 0);
+    AndroidBitmap_unlockPixels(env, srcBitmap);
+    AndroidBitmap_unlockPixels(env, dstBitmap);
+    return JNI_TRUE;
+}
