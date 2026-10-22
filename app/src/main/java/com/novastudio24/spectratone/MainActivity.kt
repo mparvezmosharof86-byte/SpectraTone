@@ -2,6 +2,7 @@ package com.novastudio24.spectratone
 
 import android.content.ContentValues
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.media.ExifInterface
@@ -38,8 +39,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novastudio24.spectratone.engine.NativeEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.util.concurrent.TimeUnit
 import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +58,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM }
+enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM, AI_TOOLS }
 enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, SHARPNESS, WARMTH, TINT, VIGNETTE }
 data class FilterPreset(val id: Int, val name: String)
 data class HslColorInfo(val index: Int, val name: String, val color: Color)
@@ -57,11 +66,13 @@ data class HslColorInfo(val index: Int, val name: String, val color: Color)
 @Composable
 fun SpectraToneStudioApp() {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     var masterBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var previewOriginal by remember { mutableStateOf<Bitmap?>(null) }
     var previewEdited by remember { mutableStateOf<Bitmap?>(null) }
     var showOriginal by remember { mutableStateOf(false) }
+    var isAiProcessing by remember { mutableStateOf(false) }
     var renderVersion by remember { mutableIntStateOf(0) }
 
     var currentMode by remember { mutableStateOf(ModeTab.ADJUST) }
@@ -158,7 +169,7 @@ fun SpectraToneStudioApp() {
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0D11)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header
+            // Top Bar
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -188,7 +199,7 @@ fun SpectraToneStudioApp() {
                                     selectedPresetId, hslValues.toFloatArray()
                                 )
                                 saveBitmapToGallery(context, fullOutput)
-                                Toast.makeText(context, "Saved in 100% Original Resolution!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Saved at 100% Original Resolution!", Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
                             shape = RoundedCornerShape(10.dp)
@@ -221,143 +232,217 @@ fun SpectraToneStudioApp() {
                             )
                         }
                     }
+
+                    if (isAiProcessing) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = Color(0xFF00E676))
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text("AI Removing Background...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                        }
+                    }
                 }
             }
 
-            // Controls
+            // Bottom Controls Area
             if (previewOriginal != null) {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF14141B)).padding(14.dp)) {
-                    // Mode Tabs
-                    Row(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.Center) {
-                        Button(onClick = { currentMode = ModeTab.ADJUST }, shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.ADJUST) Color(0xFF00E676) else Color(0xFF22222E))) {
-                            Text("Adjust", fontSize = 11.sp, color = if (currentMode == ModeTab.ADJUST) Color.Black else Color.White)
-                        }
-                        Button(onClick = { currentMode = ModeTab.HSL_MIX }, shape = RoundedCornerShape(0.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.HSL_MIX) Color(0xFF00E676) else Color(0xFF22222E))) {
-                            Text("Color Mix", fontSize = 11.sp, color = if (currentMode == ModeTab.HSL_MIX) Color.Black else Color.White)
-                        }
-                        Button(onClick = { currentMode = ModeTab.PRESETS }, shape = RoundedCornerShape(0.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.PRESETS) Color(0xFF00E676) else Color(0xFF22222E))) {
-                            Text("Presets", fontSize = 11.sp, color = if (currentMode == ModeTab.PRESETS) Color.Black else Color.White)
-                        }
-                        Button(onClick = { currentMode = ModeTab.TRANSFORM }, shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.TRANSFORM) Color(0xFF00E676) else Color(0xFF22222E))) {
-                            Text("Crop/Rotate", fontSize = 11.sp, color = if (currentMode == ModeTab.TRANSFORM) Color.Black else Color.White)
+                    // Main Tabs
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        ModeTab.values().forEach { tab ->
+                            Button(
+                                onClick = { currentMode = tab },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == tab) Color(0xFF00E676) else Color(0xFF22222E)),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(tab.name.replace("_", " "), fontSize = 11.sp, color = if (currentMode == tab) Color.Black else Color.White)
+                            }
                         }
                     }
 
-                    if (currentMode == ModeTab.ADJUST) {
-                        val currentVal = when (selectedTool) {
-                            AdjustTool.BRIGHTNESS -> brightness
-                            AdjustTool.CONTRAST -> contrast
-                            AdjustTool.SATURATION -> saturation
-                            AdjustTool.SHARPNESS -> sharpness
-                            AdjustTool.WARMTH -> warmth
-                            AdjustTool.TINT -> tint
-                            AdjustTool.VIGNETTE -> vignette
-                        }
-                        val range = when (selectedTool) {
-                            AdjustTool.CONTRAST -> -100.0f..100.0f
-                            AdjustTool.SHARPNESS -> 0.0f..1.0f
-                            AdjustTool.VIGNETTE -> 0.0f..1.0f
-                            else -> -1.0f..1.0f
-                        }
-                        Slider(
-                            value = currentVal,
-                            onValueChange = { v ->
-                                when (selectedTool) {
-                                    AdjustTool.BRIGHTNESS -> brightness = v
-                                    AdjustTool.CONTRAST -> contrast = v
-                                    AdjustTool.SATURATION -> saturation = v
-                                    AdjustTool.SHARPNESS -> sharpness = v
-                                    AdjustTool.WARMTH -> warmth = v
-                                    AdjustTool.TINT -> tint = v
-                                    AdjustTool.VIGNETTE -> vignette = v
+                    when (currentMode) {
+                        ModeTab.ADJUST -> {
+                            val currentVal = when (selectedTool) {
+                                AdjustTool.BRIGHTNESS -> brightness
+                                AdjustTool.CONTRAST -> contrast
+                                AdjustTool.SATURATION -> saturation
+                                AdjustTool.SHARPNESS -> sharpness
+                                AdjustTool.WARMTH -> warmth
+                                AdjustTool.TINT -> tint
+                                AdjustTool.VIGNETTE -> vignette
+                            }
+                            val range = when (selectedTool) {
+                                AdjustTool.CONTRAST -> -100.0f..100.0f
+                                AdjustTool.SHARPNESS, AdjustTool.VIGNETTE -> 0.0f..1.0f
+                                else -> -1.0f..1.0f
+                            }
+                            Slider(
+                                value = currentVal,
+                                onValueChange = { v ->
+                                    when (selectedTool) {
+                                        AdjustTool.BRIGHTNESS -> brightness = v
+                                        AdjustTool.CONTRAST -> contrast = v
+                                        AdjustTool.SATURATION -> saturation = v
+                                        AdjustTool.SHARPNESS -> sharpness = v
+                                        AdjustTool.WARMTH -> warmth = v
+                                        AdjustTool.TINT -> tint = v
+                                        AdjustTool.VIGNETTE -> vignette = v
+                                    }
+                                },
+                                valueRange = range,
+                                colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676))
+                            )
+                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                AdjustTool.values().forEach { tool ->
+                                    Button(
+                                        onClick = { selectedTool = tool },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = if (selectedTool == tool) Color(0xFF00E676) else Color(0xFF1E1E28))
+                                    ) {
+                                        Text(tool.name, fontSize = 11.sp, color = if (selectedTool == tool) Color.Black else Color.White)
+                                    }
                                 }
-                            },
-                            valueRange = range,
-                            colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676))
-                        )
-                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AdjustTool.entries.forEach { tool ->
+                            }
+                        }
+
+                        ModeTab.HSL_MIX -> {
+                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                colorsList.forEach { c ->
+                                    Box(
+                                        modifier = Modifier.size(32.dp).clip(CircleShape).background(c.color).border(if (selectedColorIndex == c.index) 3.dp else 0.dp, Color.White, CircleShape).clickable { selectedColorIndex = c.index }
+                                    )
+                                }
+                            }
+                            val hIdx = selectedColorIndex * 3
+                            val sIdx = selectedColorIndex * 3 + 1
+                            val lIdx = selectedColorIndex * 3 + 2
+
+                            Text("HUE SHIFT", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Slider(value = hslValues[hIdx], onValueChange = { hslValues[hIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
+                            Text("SATURATION", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Slider(value = hslValues[sIdx], onValueChange = { hslValues[sIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
+                            Text("LUMINANCE", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Slider(value = hslValues[lIdx], onValueChange = { hslValues[lIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+                        }
+
+                        ModeTab.PRESETS -> {
+                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                presets.forEach { preset ->
+                                    Button(onClick = { selectedPresetId = preset.id }, shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = if (selectedPresetId == preset.id) Color(0xFF00E676) else Color(0xFF22222E))) {
+                                        Text(preset.name, fontSize = 12.sp, color = if (selectedPresetId == preset.id) Color.Black else Color.White)
+                                    }
+                                }
+                            }
+                        }
+
+                        ModeTab.TRANSFORM -> {
+                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = {
+                                    masterBitmap?.let {
+                                        val m = Matrix().apply { postRotate(90f) }
+                                        setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
+                                    }
+                                }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                    Text("Rotate 90°", fontSize = 11.sp, color = Color.White)
+                                }
+                                Button(onClick = {
+                                    masterBitmap?.let {
+                                        val m = Matrix().apply { postScale(-1f, 1f, it.width / 2f, it.height / 2f) }
+                                        setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
+                                    }
+                                }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                    Text("Flip (Mirror)", fontSize = 11.sp, color = Color.White)
+                                }
+                                Button(onClick = { cropToAspectRatio(masterBitmap, 1.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                    Text("1:1 (Square)", fontSize = 11.sp, color = Color(0xFF00E676))
+                                }
+                                Button(onClick = { cropToAspectRatio(masterBitmap, 4.0f / 5.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                    Text("4:5 (Insta)", fontSize = 11.sp, color = Color(0xFF00E676))
+                                }
+                                Button(onClick = { cropToAspectRatio(masterBitmap, 16.0f / 9.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                    Text("16:9 (Landscape)", fontSize = 11.sp, color = Color(0xFF00E676))
+                                }
+                            }
+                        }
+
+                        ModeTab.AI_TOOLS -> {
+                            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
-                                    onClick = { selectedTool = tool },
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = if (selectedTool == tool) Color(0xFF00E676) else Color(0xFF1E1E28))
+                                    onClick = {
+                                        masterBitmap?.let { bmp ->
+                                            isAiProcessing = true
+                                            coroutineScope.launch {
+                                                val cutout = removeBackgroundWithAi(bmp)
+                                                if (cutout != null) {
+                                                    setupNewBitmap(cutout)
+                                                    Toast.makeText(context, "AI Background Removed Successfully!", Toast.LENGTH_SHORT).show()
+                                                } else {
+                                                    Toast.makeText(context, "AI Service starting up... Please try again in a moment.", Toast.LENGTH_LONG).show()
+                                                }
+                                                isAiProcessing = false
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
+                                    shape = RoundedCornerShape(10.dp)
                                 ) {
-                                    Text(tool.name, fontSize = 11.sp, color = if (selectedTool == tool) Color.Black else Color.White)
+                                    Text("AI Remove Background", fontSize = 12.sp, color = Color.Black, fontWeight = FontWeight.Bold)
                                 }
-                            }
-                        }
-                    } else if (currentMode == ModeTab.HSL_MIX) {
-                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            colorsList.forEach { c ->
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(c.color)
-                                        .border(if (selectedColorIndex == c.index) 3.dp else 0.dp, Color.White, CircleShape)
-                                        .clickable { selectedColorIndex = c.index }
-                                )
-                            }
-                        }
-                        val hIdx = selectedColorIndex * 3
-                        val sIdx = selectedColorIndex * 3 + 1
-                        val lIdx = selectedColorIndex * 3 + 2
-
-                        Text("HUE SHIFT", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
-                        Slider(value = hslValues[hIdx], onValueChange = { hslValues[hIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
-
-                        Text("SATURATION", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
-                        Slider(value = hslValues[sIdx], onValueChange = { hslValues[sIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
-
-                        Text("LUMINANCE", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
-                        Slider(value = hslValues[lIdx], onValueChange = { hslValues[lIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
-                    } else if (currentMode == ModeTab.PRESETS) {
-                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            presets.forEach { preset ->
-                                Button(
-                                    onClick = { selectedPresetId = preset.id },
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = if (selectedPresetId == preset.id) Color(0xFF00E676) else Color(0xFF22222E))
-                                ) {
-                                    Text(preset.name, fontSize = 12.sp, color = if (selectedPresetId == preset.id) Color.Black else Color.White)
-                                }
-                            }
-                        }
-                    } else { // TRANSFORM / CROP MODE
-                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                masterBitmap?.let {
-                                    val m = Matrix().apply { postRotate(90f) }
-                                    setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
-                                }
-                            }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
-                                Text("Rotate 90°", fontSize = 11.sp, color = Color.White)
-                            }
-                            Button(onClick = {
-                                masterBitmap?.let {
-                                    val m = Matrix().apply { postScale(-1f, 1f, it.width / 2f, it.height / 2f) }
-                                    setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
-                                }
-                            }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
-                                Text("Flip (Mirror)", fontSize = 11.sp, color = Color.White)
-                            }
-                            Button(onClick = { cropToAspectRatio(masterBitmap, 1.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
-                                Text("1:1 (Square)", fontSize = 11.sp, color = Color(0xFF00E676))
-                            }
-                            Button(onClick = { cropToAspectRatio(masterBitmap, 4.0f / 5.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
-                                Text("4:5 (Insta)", fontSize = 11.sp, color = Color(0xFF00E676))
-                            }
-                            Button(onClick = { cropToAspectRatio(masterBitmap, 16.0f / 9.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
-                                Text("16:9 (Landscape)", fontSize = 11.sp, color = Color(0xFF00E676))
-                            }
-                            Button(onClick = { cropToAspectRatio(masterBitmap, 9.0f / 16.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
-                                Text("9:16 (Story)", fontSize = 11.sp, color = Color(0xFF00E676))
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+// Background Removal AI Engine Connector (OkHttp)
+suspend fun removeBackgroundWithAi(bitmap: Bitmap): Bitmap? = withContext(Dispatchers.IO) {
+    try {
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 90, stream)
+        val byteArray = stream.toByteArray()
+
+        val client = OkHttpClient.Builder()
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file", "image.png",
+                byteArray.toRequestBody("image/png".toMediaTypeOrNull())
+            )
+            .build()
+
+        // SpectraTone Free AI Endpoint (FastAPI RMBG)
+        val request = Request.Builder()
+            .url("https://spectratone-ai.hf.space/remove-bg")
+            .post(requestBody)
+            .build()
+
+        val response = client.newCall(request).execute()
+        if (response.isSuccessful) {
+            response.body?.byteStream()?.use { byteStream ->
+                BitmapFactory.decodeStream(byteStream)
+            }
+        } else {
+            null
+        }
+    } catch (e: Exception) {
+        null
     }
 }
 
