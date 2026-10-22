@@ -53,7 +53,7 @@ static inline void hsl2rgb(float h, float s, float l, float& r, float& g, float&
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_novastudio24_spectratone_engine_NativeEngine_getEngineStatus(
         JNIEnv* env, jobject /* this */) {
-    return env->NewStringUTF("SpectraTone HSL Color Engine Online");
+    return env->NewStringUTF("SpectraTone High-Pass Sharpness Core Online");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -62,6 +62,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
         jobject srcBitmap, jobject dstBitmap,
         jfloat brightness, jfloat contrast, jfloat saturation,
         jfloat warmth, jfloat tint, jfloat vignette,
+        jfloat sharpness,
         jint presetId,
         jfloatArray hslArray) {
 
@@ -111,27 +112,45 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             float b = srcRow[px + 2] + bWarmth + mTint + brightOffset;
             uint8_t a = srcRow[px + 3];
 
+            // 1. High-Pass Sharpness Kernel
+            if (sharpness > 0.01f && y > 0 && y < height - 1 && x > 0 && x < width - 1) {
+                uint8_t* topRow = srcBytes + ((y - 1) * srcStride);
+                uint8_t* botRow = srcBytes + ((y + 1) * srcStride);
+
+                float hpR = 4.0f * srcRow[px] - topRow[px] - botRow[px] - srcRow[px - 4] - srcRow[px + 4];
+                float hpG = 4.0f * srcRow[px + 1] - topRow[px + 1] - botRow[px + 1] - srcRow[px - 3] - srcRow[px + 5];
+                float hpB = 4.0f * srcRow[px + 2] - topRow[px + 2] - botRow[px + 2] - srcRow[px - 2] - srcRow[px + 6];
+
+                r += hpR * (sharpness * 0.45f);
+                g += hpG * (sharpness * 0.45f);
+                b += hpB * (sharpness * 0.45f);
+            }
+
+            // 2. Contrast
             r = contrastFactor * (r - 128.0f) + 128.0f;
             g = contrastFactor * (g - 128.0f) + 128.0f;
             b = contrastFactor * (b - 128.0f) + 128.0f;
 
+            // 3. Saturation
             float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
             r = lum + (r - lum) * satFactor;
             g = lum + (g - lum) * satFactor;
             b = lum + (b - lum) * satFactor;
 
+            // 4. Presets
             if (presetId == 1) { // Cinematic
                 if (lum > 128.0f) { r += 20.0f; b -= 15.0f; }
                 else { b += 25.0f; g += 10.0f; r -= 15.0f; }
             } else if (presetId == 2) { // Vintage
                 r += 25.0f; g += 15.0f; b = std::max(b * 0.8f, 30.0f);
-            } else if (presetId == 3) { // Noir
+            } else if (presetId == 3) { // Film Noir
                 float mono = 0.299f * r + 0.587f * g + 0.114f * b;
                 r = g = b = 1.35f * (mono - 128.0f) + 128.0f;
             } else if (presetId == 4) { // Cyberpunk
                 r += 20.0f; b += 40.0f; g = std::min(g, 180.0f);
             }
 
+            // 5. 8-Color HSL Matrix
             float hVal, sVal, lVal;
             rgb2hsl(r, g, b, hVal, sVal, lVal);
 
@@ -158,6 +177,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 hsl2rgb(hVal, sVal, lVal, r, g, b);
             }
 
+            // 6. Vignette
             if (vignette > 0.001f) {
                 float dx = x - cx;
                 float vFactor = std::max(0.0f, 1.0f - (vignette * ((dx * dx + dySq) / maxDistSq)));
