@@ -3,6 +3,8 @@ package com.novastudio24.spectratone
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -37,6 +39,8 @@ import androidx.compose.ui.unit.sp
 import com.novastudio24.spectratone.engine.NativeEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.InputStream
+import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,9 +57,15 @@ data class HslColorInfo(val index: Int, val name: String, val color: Color)
 @Composable
 fun SpectraToneStudioApp() {
     val context = LocalContext.current
-    var originalBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var editedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Master original bitmap (full resolution for Save)
+    var masterBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Fast preview bitmaps for 60 FPS slider responsiveness
+    var previewOriginal by remember { mutableStateOf<Bitmap?>(null) }
+    var previewEdited by remember { mutableStateOf<Bitmap?>(null) }
     var showOriginal by remember { mutableStateOf(false) }
+    var renderVersion by remember { mutableIntStateOf(0) }
 
     var currentMode by remember { mutableStateOf(ModeTab.ADJUST) }
     var selectedTool by remember { mutableStateOf(AdjustTool.BRIGHTNESS) }
@@ -97,25 +107,51 @@ fun SpectraToneStudioApp() {
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             try {
+                var bmp: Bitmap
                 val source = ImageDecoder.createSource(context.contentResolver, it)
-                val bmp = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                bmp = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
                     decoder.isMutableRequired = true
                     decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                 }
-                originalBitmap = bmp
-                editedBitmap = bmp.copy(Bitmap.Config.ARGB_8888, true)
+
+                // Auto-orient according to EXIF
+                context.contentResolver.openInputStream(it)?.use { stream ->
+                    bmp = autoRotateBitmap(stream, bmp)
+                }
+
+                masterBitmap = bmp
+
+                // Create high-res fast preview (max 1600px) so sliders NEVER tear or lag
+                val maxDimension = 1600
+                val scale = if (max(bmp.width, bmp.height) > maxDimension) {
+                    maxDimension.toFloat() / max(bmp.width, bmp.height)
+                } else {
+                    1.0f
+                }
+                val previewBmp = if (scale < 1.0f) {
+                    Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+                } else {
+                    bmp.copy(Bitmap.Config.ARGB_8888, true)
+                }
+
+                previewOriginal = previewBmp
+                previewEdited = previewBmp.copy(Bitmap.Config.ARGB_8888, true)
+
                 brightness = 0.0f; contrast = 0.0f; saturation = 0.0f
                 warmth = 0.0f; tint = 0.0f; vignette = 0.0f; selectedPresetId = 0
                 for (i in 0 until 24) hslValues[i] = 0.0f
+                renderVersion++
             } catch (e: Exception) {
                 Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    LaunchedEffect(brightness, contrast, saturation, warmth, tint, vignette, selectedPresetId, hslValues.toList(), originalBitmap) {
-        val src = originalBitmap ?: return@LaunchedEffect
-        val dst = editedBitmap ?: return@LaunchedEffect
+    // Process C++ engine with synchronized rendering
+    LaunchedEffect(brightness, contrast, saturation, warmth, tint, vignette, selectedPresetId, hslValues.toList(), previewOriginal) {
+        val src = previewOriginal ?: return@LaunchedEffect
+        val dst = previewEdited ?: return@LaunchedEffect
+
         withContext(Dispatchers.Default) {
             NativeEngine.applyAdjustments(
                 src, dst,
@@ -124,10 +160,12 @@ fun SpectraToneStudioApp() {
                 hslValues.toFloatArray()
             )
         }
+        renderVersion++
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0D0D11)) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // Header
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -145,11 +183,19 @@ fun SpectraToneStudioApp() {
                     ) {
                         Text("Open", fontSize = 12.sp, color = Color.White)
                     }
-                    if (editedBitmap != null) {
+                    if (masterBitmap != null) {
                         Button(
                             onClick = {
-                                saveBitmapToGallery(context, editedBitmap!!)
-                                Toast.makeText(context, "Saved to Gallery!", Toast.LENGTH_SHORT).show()
+                                val fullOriginal = masterBitmap!!
+                                val fullOutput = fullOriginal.copy(Bitmap.Config.ARGB_8888, true)
+                                NativeEngine.applyAdjustments(
+                                    fullOriginal, fullOutput,
+                                    brightness, contrast, saturation,
+                                    warmth, tint, vignette, selectedPresetId,
+                                    hslValues.toFloatArray()
+                                )
+                                saveBitmapToGallery(context, fullOutput)
+                                Toast.makeText(context, "Saved at 100% Original Resolution!", Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
                             shape = RoundedCornerShape(10.dp)
@@ -160,11 +206,12 @@ fun SpectraToneStudioApp() {
                 }
             }
 
+            // Preview Canvas
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF16161E)),
                 contentAlignment = Alignment.Center
             ) {
-                if (originalBitmap == null) {
+                if (previewOriginal == null) {
                     Button(
                         onClick = { galleryLauncher.launch("image/*") },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1F1F2C))
@@ -172,20 +219,23 @@ fun SpectraToneStudioApp() {
                         Text("Tap to Choose a Photo", color = Color(0xFF00E676), fontSize = 14.sp)
                     }
                 } else {
-                    val displayBmp = if (showOriginal) originalBitmap else editedBitmap
-                    displayBmp?.let {
-                        Image(
-                            bitmap = it.asImageBitmap(),
-                            contentDescription = "Preview",
-                            modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                                detectTapGestures(onPress = { showOriginal = true; tryAwaitRelease(); showOriginal = false })
-                            }
-                        )
+                    key(renderVersion, showOriginal) {
+                        val displayBmp = if (showOriginal) previewOriginal else previewEdited
+                        displayBmp?.let {
+                            Image(
+                                bitmap = it.asImageBitmap(),
+                                contentDescription = "Preview",
+                                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                                    detectTapGestures(onPress = { showOriginal = true; tryAwaitRelease(); showOriginal = false })
+                                }
+                            )
+                        }
                     }
                 }
             }
 
-            if (originalBitmap != null) {
+            // Controls Area
+            if (previewOriginal != null) {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF14141B)).padding(14.dp)) {
                     Row(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.Center) {
                         Button(
@@ -298,6 +348,19 @@ fun SpectraToneStudioApp() {
             }
         }
     }
+}
+
+fun autoRotateBitmap(stream: InputStream, bitmap: Bitmap): Bitmap {
+    val exif = ExifInterface(stream)
+    val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    val matrix = Matrix()
+    when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+        ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+        ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+        else -> return bitmap
+    }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
 }
 
 fun saveBitmapToGallery(context: android.content.Context, bitmap: Bitmap) {
