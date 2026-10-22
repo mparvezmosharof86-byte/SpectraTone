@@ -49,8 +49,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class ModeTab { PRESETS, ADJUST, HSL_MIX }
-enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, WARMTH, TINT, VIGNETTE }
+enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM }
+enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, SHARPNESS, WARMTH, TINT, VIGNETTE }
 data class FilterPreset(val id: Int, val name: String)
 data class HslColorInfo(val index: Int, val name: String, val color: Color)
 
@@ -58,10 +58,7 @@ data class HslColorInfo(val index: Int, val name: String, val color: Color)
 fun SpectraToneStudioApp() {
     val context = LocalContext.current
 
-    // Master original bitmap (full resolution for Save)
     var masterBitmap by remember { mutableStateOf<Bitmap?>(null) }
-
-    // Fast preview bitmaps for 60 FPS slider responsiveness
     var previewOriginal by remember { mutableStateOf<Bitmap?>(null) }
     var previewEdited by remember { mutableStateOf<Bitmap?>(null) }
     var showOriginal by remember { mutableStateOf(false) }
@@ -70,9 +67,11 @@ fun SpectraToneStudioApp() {
     var currentMode by remember { mutableStateOf(ModeTab.ADJUST) }
     var selectedTool by remember { mutableStateOf(AdjustTool.BRIGHTNESS) }
 
+    // Sliders
     var brightness by remember { mutableFloatStateOf(0.0f) }
     var contrast by remember { mutableFloatStateOf(0.0f) }
     var saturation by remember { mutableFloatStateOf(0.0f) }
+    var sharpness by remember { mutableFloatStateOf(0.0f) }
     var warmth by remember { mutableFloatStateOf(0.0f) }
     var tint by remember { mutableFloatStateOf(0.0f) }
     var vignette by remember { mutableFloatStateOf(0.0f) }
@@ -104,51 +103,45 @@ fun SpectraToneStudioApp() {
         )
     }
 
+    fun setupNewBitmap(newMaster: Bitmap) {
+        masterBitmap = newMaster
+        val maxDimension = 1600
+        val scale = if (max(newMaster.width, newMaster.height) > maxDimension) {
+            maxDimension.toFloat() / max(newMaster.width, newMaster.height)
+        } else 1.0f
+
+        val previewBmp = if (scale < 1.0f) {
+            Bitmap.createScaledBitmap(newMaster, (newMaster.width * scale).toInt(), (newMaster.height * scale).toInt(), true)
+        } else {
+            newMaster.copy(Bitmap.Config.ARGB_8888, true)
+        }
+        previewOriginal = previewBmp
+        previewEdited = previewBmp.copy(Bitmap.Config.ARGB_8888, true)
+        renderVersion++
+    }
+
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             try {
-                var bmp: Bitmap
                 val source = ImageDecoder.createSource(context.contentResolver, it)
-                bmp = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                var bmp = ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
                     decoder.isMutableRequired = true
                     decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                 }
-
-                // Auto-orient according to EXIF
                 context.contentResolver.openInputStream(it)?.use { stream ->
                     bmp = autoRotateBitmap(stream, bmp)
                 }
-
-                masterBitmap = bmp
-
-                // Create high-res fast preview (max 1600px) so sliders NEVER tear or lag
-                val maxDimension = 1600
-                val scale = if (max(bmp.width, bmp.height) > maxDimension) {
-                    maxDimension.toFloat() / max(bmp.width, bmp.height)
-                } else {
-                    1.0f
-                }
-                val previewBmp = if (scale < 1.0f) {
-                    Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
-                } else {
-                    bmp.copy(Bitmap.Config.ARGB_8888, true)
-                }
-
-                previewOriginal = previewBmp
-                previewEdited = previewBmp.copy(Bitmap.Config.ARGB_8888, true)
-
-                brightness = 0.0f; contrast = 0.0f; saturation = 0.0f
+                brightness = 0.0f; contrast = 0.0f; saturation = 0.0f; sharpness = 0.0f
                 warmth = 0.0f; tint = 0.0f; vignette = 0.0f; selectedPresetId = 0
                 for (i in 0 until 24) hslValues[i] = 0.0f
-                renderVersion++
+                setupNewBitmap(bmp)
             } catch (e: Exception) {
                 Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    // Process C++ engine with synchronized rendering
-    LaunchedEffect(brightness, contrast, saturation, warmth, tint, vignette, selectedPresetId, hslValues.toList(), previewOriginal) {
+    LaunchedEffect(brightness, contrast, saturation, sharpness, warmth, tint, vignette, selectedPresetId, hslValues.toList(), previewOriginal) {
         val src = previewOriginal ?: return@LaunchedEffect
         val dst = previewEdited ?: return@LaunchedEffect
 
@@ -156,8 +149,8 @@ fun SpectraToneStudioApp() {
             NativeEngine.applyAdjustments(
                 src, dst,
                 brightness, contrast, saturation,
-                warmth, tint, vignette, selectedPresetId,
-                hslValues.toFloatArray()
+                warmth, tint, vignette, sharpness,
+                selectedPresetId, hslValues.toFloatArray()
             )
         }
         renderVersion++
@@ -191,11 +184,11 @@ fun SpectraToneStudioApp() {
                                 NativeEngine.applyAdjustments(
                                     fullOriginal, fullOutput,
                                     brightness, contrast, saturation,
-                                    warmth, tint, vignette, selectedPresetId,
-                                    hslValues.toFloatArray()
+                                    warmth, tint, vignette, sharpness,
+                                    selectedPresetId, hslValues.toFloatArray()
                                 )
                                 saveBitmapToGallery(context, fullOutput)
-                                Toast.makeText(context, "Saved at 100% Original Resolution!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Saved in 100% Original Resolution!", Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
                             shape = RoundedCornerShape(10.dp)
@@ -212,10 +205,7 @@ fun SpectraToneStudioApp() {
                 contentAlignment = Alignment.Center
             ) {
                 if (previewOriginal == null) {
-                    Button(
-                        onClick = { galleryLauncher.launch("image/*") },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1F1F2C))
-                    ) {
+                    Button(onClick = { galleryLauncher.launch("image/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1F1F2C))) {
                         Text("Tap to Choose a Photo", color = Color(0xFF00E676), fontSize = 14.sp)
                     }
                 } else {
@@ -234,30 +224,22 @@ fun SpectraToneStudioApp() {
                 }
             }
 
-            // Controls Area
+            // Controls
             if (previewOriginal != null) {
                 Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF14141B)).padding(14.dp)) {
+                    // Mode Tabs
                     Row(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.Center) {
-                        Button(
-                            onClick = { currentMode = ModeTab.ADJUST },
-                            shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.ADJUST) Color(0xFF00E676) else Color(0xFF22222E))
-                        ) {
+                        Button(onClick = { currentMode = ModeTab.ADJUST }, shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.ADJUST) Color(0xFF00E676) else Color(0xFF22222E))) {
                             Text("Adjust", fontSize = 11.sp, color = if (currentMode == ModeTab.ADJUST) Color.Black else Color.White)
                         }
-                        Button(
-                            onClick = { currentMode = ModeTab.HSL_MIX },
-                            shape = RoundedCornerShape(0.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.HSL_MIX) Color(0xFF00E676) else Color(0xFF22222E))
-                        ) {
+                        Button(onClick = { currentMode = ModeTab.HSL_MIX }, shape = RoundedCornerShape(0.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.HSL_MIX) Color(0xFF00E676) else Color(0xFF22222E))) {
                             Text("Color Mix", fontSize = 11.sp, color = if (currentMode == ModeTab.HSL_MIX) Color.Black else Color.White)
                         }
-                        Button(
-                            onClick = { currentMode = ModeTab.PRESETS },
-                            shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.PRESETS) Color(0xFF00E676) else Color(0xFF22222E))
-                        ) {
+                        Button(onClick = { currentMode = ModeTab.PRESETS }, shape = RoundedCornerShape(0.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.PRESETS) Color(0xFF00E676) else Color(0xFF22222E))) {
                             Text("Presets", fontSize = 11.sp, color = if (currentMode == ModeTab.PRESETS) Color.Black else Color.White)
+                        }
+                        Button(onClick = { currentMode = ModeTab.TRANSFORM }, shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = if (currentMode == ModeTab.TRANSFORM) Color(0xFF00E676) else Color(0xFF22222E))) {
+                            Text("Crop/Rotate", fontSize = 11.sp, color = if (currentMode == ModeTab.TRANSFORM) Color.Black else Color.White)
                         }
                     }
 
@@ -266,12 +248,14 @@ fun SpectraToneStudioApp() {
                             AdjustTool.BRIGHTNESS -> brightness
                             AdjustTool.CONTRAST -> contrast
                             AdjustTool.SATURATION -> saturation
+                            AdjustTool.SHARPNESS -> sharpness
                             AdjustTool.WARMTH -> warmth
                             AdjustTool.TINT -> tint
                             AdjustTool.VIGNETTE -> vignette
                         }
                         val range = when (selectedTool) {
                             AdjustTool.CONTRAST -> -100.0f..100.0f
+                            AdjustTool.SHARPNESS -> 0.0f..1.0f
                             AdjustTool.VIGNETTE -> 0.0f..1.0f
                             else -> -1.0f..1.0f
                         }
@@ -282,6 +266,7 @@ fun SpectraToneStudioApp() {
                                     AdjustTool.BRIGHTNESS -> brightness = v
                                     AdjustTool.CONTRAST -> contrast = v
                                     AdjustTool.SATURATION -> saturation = v
+                                    AdjustTool.SHARPNESS -> sharpness = v
                                     AdjustTool.WARMTH -> warmth = v
                                     AdjustTool.TINT -> tint = v
                                     AdjustTool.VIGNETTE -> vignette = v
@@ -302,10 +287,7 @@ fun SpectraToneStudioApp() {
                             }
                         }
                     } else if (currentMode == ModeTab.HSL_MIX) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
+                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             colorsList.forEach { c ->
                                 Box(
                                     modifier = Modifier
@@ -317,21 +299,19 @@ fun SpectraToneStudioApp() {
                                 )
                             }
                         }
-
                         val hIdx = selectedColorIndex * 3
                         val sIdx = selectedColorIndex * 3 + 1
                         val lIdx = selectedColorIndex * 3 + 2
 
-                        Text("HUE SHIFT (${String.format("%.0f", hslValues[hIdx] * 100)})", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Text("HUE SHIFT", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                         Slider(value = hslValues[hIdx], onValueChange = { hslValues[hIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
 
-                        Text("SATURATION (${String.format("%.0f", hslValues[sIdx] * 100)})", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Text("SATURATION", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                         Slider(value = hslValues[sIdx], onValueChange = { hslValues[sIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
 
-                        Text("LUMINANCE (${String.format("%.0f", hslValues[lIdx] * 100)})", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                        Text("LUMINANCE", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                         Slider(value = hslValues[lIdx], onValueChange = { hslValues[lIdx] = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
-
-                    } else {
+                    } else if (currentMode == ModeTab.PRESETS) {
                         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             presets.forEach { preset ->
                                 Button(
@@ -343,11 +323,61 @@ fun SpectraToneStudioApp() {
                                 }
                             }
                         }
+                    } else { // TRANSFORM / CROP MODE
+                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                masterBitmap?.let {
+                                    val m = Matrix().apply { postRotate(90f) }
+                                    setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
+                                }
+                            }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Text("Rotate 90°", fontSize = 11.sp, color = Color.White)
+                            }
+                            Button(onClick = {
+                                masterBitmap?.let {
+                                    val m = Matrix().apply { postScale(-1f, 1f, it.width / 2f, it.height / 2f) }
+                                    setupNewBitmap(Bitmap.createBitmap(it, 0, 0, it.width, it.height, m, true))
+                                }
+                            }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Text("Flip (Mirror)", fontSize = 11.sp, color = Color.White)
+                            }
+                            Button(onClick = { cropToAspectRatio(masterBitmap, 1.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Text("1:1 (Square)", fontSize = 11.sp, color = Color(0xFF00E676))
+                            }
+                            Button(onClick = { cropToAspectRatio(masterBitmap, 4.0f / 5.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Text("4:5 (Insta)", fontSize = 11.sp, color = Color(0xFF00E676))
+                            }
+                            Button(onClick = { cropToAspectRatio(masterBitmap, 16.0f / 9.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Text("16:9 (Landscape)", fontSize = 11.sp, color = Color(0xFF00E676))
+                            }
+                            Button(onClick = { cropToAspectRatio(masterBitmap, 9.0f / 16.0f)?.let { setupNewBitmap(it) } }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                Text("9:16 (Story)", fontSize = 11.sp, color = Color(0xFF00E676))
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+fun cropToAspectRatio(bmp: Bitmap?, targetRatio: Float): Bitmap? {
+    val b = bmp ?: return null
+    val currentRatio = b.width.toFloat() / b.height.toFloat()
+    val cropWidth: Int
+    val cropHeight: Int
+
+    if (currentRatio > targetRatio) {
+        cropHeight = b.height
+        cropWidth = (cropHeight * targetRatio).toInt()
+    } else {
+        cropWidth = b.width
+        cropHeight = (cropWidth / targetRatio).toInt()
+    }
+
+    val startX = (b.width - cropWidth) / 2
+    val startY = (b.height - cropHeight) / 2
+    return Bitmap.createBitmap(b, startX, startY, cropWidth, cropHeight)
 }
 
 fun autoRotateBitmap(stream: InputStream, bitmap: Bitmap): Bitmap {
