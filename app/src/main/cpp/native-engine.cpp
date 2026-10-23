@@ -55,10 +55,24 @@ static inline void hsl2rgb(float h, float s, float l, float& r, float& g, float&
     }
 }
 
+// Builds a 256-element Tone Curve LUT (Shadows, Midtones, Highlights)
+static void buildToneCurveLUT(uint8_t lut[256], float shadows, float midtones, float highlights) {
+    for (int i = 0; i < 256; ++i) {
+        float x = i / 255.0f;
+        // Cubic spline interpolation across tonal ranges
+        float wShadow = (1.0f - smoothstep(0.0f, 0.45f, x));
+        float wMid = smoothstep(0.15f, 0.50f, x) * (1.0f - smoothstep(0.50f, 0.85f, x));
+        float wHigh = smoothstep(0.55f, 1.0f, x);
+
+        float delta = (shadows * 35.0f * wShadow) + (midtones * 40.0f * wMid) + (highlights * 35.0f * wHigh);
+        lut[i] = clamp8(i + delta);
+    }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_novastudio24_spectratone_engine_NativeEngine_getEngineStatus(
         JNIEnv* env, jobject /* this */) {
-    return env->NewStringUTF("SpectraTone Frequency Separation Engine Online");
+    return env->NewStringUTF("SpectraTone Tone Curves & Spline LUT Core Online");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -68,6 +82,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
         jfloat brightness, jfloat contrast, jfloat saturation,
         jfloat warmth, jfloat tint, jfloat vignette,
         jfloat sharpness, jfloat skinSmooth,
+        jfloat curveShadows, jfloat curveMidtones, jfloat curveHighlights,
         jint presetId,
         jfloatArray hslArray) {
 
@@ -89,6 +104,10 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
     uint8_t* srcBytes = static_cast<uint8_t*>(srcPixels);
     uint8_t* dstBytes = static_cast<uint8_t*>(dstPixels);
 
+    // Build Tone Curve LUT
+    uint8_t toneLUT[256];
+    buildToneCurveLUT(toneLUT, curveShadows, curveMidtones, curveHighlights);
+
     float contrastFactor = (259.0f * (contrast + 255.0f)) / (255.0f * (259.0f - contrast));
     float satFactor = saturation + 1.0f;
     float brightOffset = brightness * 255.0f;
@@ -102,8 +121,6 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
     float maxDistSq = cx * cx + cy * cy;
 
     const float centerHues[8] = { 0.0f, 30.0f, 60.0f, 120.0f, 180.0f, 240.0f, 280.0f, 320.0f };
-
-    // Step radius for high quality skin smoothing (Photoshop style)
     const int kRadius = 3; 
 
     for (int y = 0; y < height; ++y) {
@@ -120,49 +137,35 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             float b = srcRow[px + 2];
             uint8_t a = srcRow[px + 3];
 
-            // 1. Studio Skin Retouch (Wide-Range Bilateral Blur)
+            // 1. Studio Skin Smoothing
             if (skinSmooth > 0.02f && y >= kRadius && y < height - kRadius && x >= kRadius && x < width - kRadius) {
                 float hV, sV, lV;
                 rgb2hsl(r, g, b, hV, sV, lV);
-
-                // Human skin detection (Hue 6 to 52 deg)
                 if (hV >= 6.0f && hV <= 52.0f && sV >= 0.10f && sV <= 0.80f && lV >= 0.15f && lV <= 0.92f) {
-                    float sumR = 0, sumG = 0, sumB = 0;
-                    float wSum = 0;
-
+                    float sumR = 0, sumG = 0, sumB = 0, wSum = 0;
                     for (int ky = -kRadius; ky <= kRadius; ky += 2) {
                         uint8_t* kRow = srcBytes + ((y + ky) * srcStride);
                         for (int kx = -kRadius; kx <= kRadius; kx += 2) {
                             int kpx = (x + kx) * 4;
-                            float nr = kRow[kpx];
-                            float ng = kRow[kpx + 1];
-                            float nb = kRow[kpx + 2];
-
-                            float colorDiff = std::abs(r - nr) + std::abs(g - ng) + std::abs(b - nb);
-                            if (colorDiff < 75.0f) {
-                                float weight = 1.0f - (colorDiff / 75.0f);
-                                sumR += nr * weight;
-                                sumG += ng * weight;
-                                sumB += nb * weight;
+                            float nr = kRow[kpx], ng = kRow[kpx + 1], nb = kRow[kpx + 2];
+                            float diff = std::abs(r - nr) + std::abs(g - ng) + std::abs(b - nb);
+                            if (diff < 75.0f) {
+                                float weight = 1.0f - (diff / 75.0f);
+                                sumR += nr * weight; sumG += ng * weight; sumB += nb * weight;
                                 wSum += weight;
                             }
                         }
                     }
-
                     if (wSum > 0.01f) {
-                        float blurR = sumR / wSum;
-                        float blurG = sumG / wSum;
-                        float blurB = sumB / wSum;
-
                         float blend = skinSmooth * 0.85f;
-                        r = r * (1.0f - blend) + blurR * blend;
-                        g = g * (1.0f - blend) + blurG * blend;
-                        b = b * (1.0f - blend) + blurB * blend;
+                        r = r * (1.0f - blend) + (sumR / wSum) * blend;
+                        g = g * (1.0f - blend) + (sumG / wSum) * blend;
+                        b = b * (1.0f - blend) + (sumB / wSum) * blend;
                     }
                 }
             }
 
-            // 2. High-Pass Edge Sharpening (Only for genuine contrast edges)
+            // 2. High-Pass Edge Sharpening
             if (sharpness > 0.01f && y > 0 && y < height - 1 && x > 0 && x < width - 1) {
                 uint8_t* topRow = srcBytes + ((y - 1) * srcStride);
                 uint8_t* botRow = srcBytes + ((y + 1) * srcStride);
@@ -181,33 +184,36 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             g += (gTint + brightOffset);
             b += (bWarmth + mTint + brightOffset);
 
-            // 4. Contrast
+            // 4. Tone Curve Spline Evaluation (Lightroom Curves)
+            r = toneLUT[clamp8(r)];
+            g = toneLUT[clamp8(g)];
+            b = toneLUT[clamp8(b)];
+
+            // 5. Contrast
             r = contrastFactor * (r - 128.0f) + 128.0f;
             g = contrastFactor * (g - 128.0f) + 128.0f;
             b = contrastFactor * (b - 128.0f) + 128.0f;
 
-            // 5. Global Saturation
+            // 6. Global Saturation
             float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
             r = lum + (r - lum) * satFactor;
             g = lum + (g - lum) * satFactor;
             b = lum + (b - lum) * satFactor;
 
-            // 6. Professional Presets (Hermite Spline)
+            // 7. Presets (Hermite Spline)
             float normLum = lum / 255.0f;
-
-            if (presetId == 1) { // Cinematic (Smooth Skin Protection)
+            if (presetId == 1) { // Cinematic
                 float hiWeight = smoothstep(0.40f, 0.85f, normLum);
                 float shWeight = 1.0f - smoothstep(0.15f, 0.60f, normLum);
-
                 r += 12.0f * hiWeight - 8.0f * shWeight;
                 g += 3.0f * hiWeight + 2.0f * shWeight;
                 b += -10.0f * hiWeight + 14.0f * shWeight;
-            } else if (presetId == 2) { // Vintage Matte Film
+            } else if (presetId == 2) { // Vintage
                 float shLift = (1.0f - normLum) * 16.0f;
                 r += 8.0f + shLift * 0.35f;
                 g += 5.0f + shLift * 0.15f;
                 b = b * 0.92f + shLift * 0.45f;
-            } else if (presetId == 3) { // Film Noir Rich B&W
+            } else if (presetId == 3) { // Film Noir
                 float mono = 0.299f * r + 0.587f * g + 0.114f * b;
                 float mNorm = mono / 255.0f;
                 float curved = (mNorm < 0.5f) ? (2.0f * mNorm * mNorm) : (1.0f - 2.0f * (1.0f - mNorm) * (1.0f - mNorm));
@@ -218,7 +224,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 b += 18.0f * shWeight;
             }
 
-            // 7. 8-Color HSL Matrix
+            // 8. 8-Color HSL Matrix
             float hVal, sVal, lVal;
             rgb2hsl(r, g, b, hVal, sVal, lVal);
 
@@ -245,7 +251,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 hsl2rgb(hVal, sVal, lVal, r, g, b);
             }
 
-            // 8. Natural Vignette
+            // 9. Natural Vignette
             if (vignette > 0.001f) {
                 float dx = x - cx;
                 float vFactor = std::max(0.0f, 1.0f - (vignette * ((dx * dx + dySq) / maxDistSq)));
