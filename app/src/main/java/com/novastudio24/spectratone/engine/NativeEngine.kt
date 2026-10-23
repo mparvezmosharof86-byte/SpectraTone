@@ -20,6 +20,9 @@ object NativeEngine {
         vignette: Float,
         sharpness: Float,
         skinSmooth: Float,
+        curveShadows: Float,
+        curveMidtones: Float,
+        curveHighlights: Float,
         presetId: Int,
         hslArray: FloatArray
     ): Boolean
