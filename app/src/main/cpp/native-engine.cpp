@@ -68,7 +68,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
         jobject srcBitmap, jobject dstBitmap,
         jfloat brightness, jfloat contrast, jfloat saturation,
         jfloat warmth, jfloat tint, jfloat vignette,
-        jfloat sharpness,
+        jfloat sharpness, jfloat skinSmooth,
         jint presetId,
         jfloatArray hslArray) {
 
@@ -118,7 +118,40 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             float b = srcRow[px + 2];
             uint8_t a = srcRow[px + 3];
 
-            // 1. High-Pass Edge Sharpening (Zero Halo on Skin)
+            // 1. Natural Skin Smoothing (Bilateral Edge-Preserving Filter)
+            if (skinSmooth > 0.01f && y > 1 && y < height - 2 && x > 1 && x < width - 2) {
+                float hV, sV, lV;
+                rgb2hsl(r, g, b, hV, sV, lV);
+                // Detect human skin tone range
+                if (hV >= 8.0f && hV <= 48.0f && sV >= 0.12f && sV <= 0.75f && lV >= 0.15f && lV <= 0.90f) {
+                    float sumR = r, sumG = g, sumB = b;
+                    float totalWeight = 1.0f;
+
+                    uint8_t* top = srcBytes + ((y - 1) * srcStride) + px;
+                    uint8_t* bot = srcBytes + ((y + 1) * srcStride) + px;
+                    uint8_t* left = srcRow + px - 4;
+                    uint8_t* right = srcRow + px + 4;
+
+                    uint8_t* neighbors[4] = {top, bot, left, right};
+                    for (int n = 0; n < 4; ++n) {
+                        float nR = neighbors[n][0];
+                        float nG = neighbors[n][1];
+                        float nB = neighbors[n][2];
+                        float diff = std::abs(r - nR) + std::abs(g - nG) + std::abs(b - nB);
+                        // If color difference is small (skin pores/acne), smooth it. If large (hair/eyes), protect it!
+                        if (diff < 50.0f) {
+                            float w = 0.5f * (1.0f - diff / 50.0f);
+                            sumR += nR * w; sumG += nG * w; sumB += nB * w;
+                            totalWeight += w;
+                        }
+                    }
+                    r = r * (1.0f - skinSmooth) + (sumR / totalWeight) * skinSmooth;
+                    g = g * (1.0f - skinSmooth) + (sumG / totalWeight) * skinSmooth;
+                    b = b * (1.0f - skinSmooth) + (sumB / totalWeight) * skinSmooth;
+                }
+            }
+
+            // 2. High-Pass Edge Sharpening (Zero Halo)
             if (sharpness > 0.01f && y > 0 && y < height - 1 && x > 0 && x < width - 1) {
                 uint8_t* topRow = srcBytes + ((y - 1) * srcStride);
                 uint8_t* botRow = srcBytes + ((y + 1) * srcStride);
@@ -132,23 +165,23 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 b += hpB * (sharpness * 0.20f);
             }
 
-            // 2. White Balance & Brightness
+            // 3. White Balance & Brightness
             r += (rWarmth + mTint + brightOffset);
             g += (gTint + brightOffset);
             b += (bWarmth + mTint + brightOffset);
 
-            // 3. Contrast
+            // 4. Contrast
             r = contrastFactor * (r - 128.0f) + 128.0f;
             g = contrastFactor * (g - 128.0f) + 128.0f;
             b = contrastFactor * (b - 128.0f) + 128.0f;
 
-            // 4. Global Saturation
+            // 5. Global Saturation
             float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
             r = lum + (r - lum) * satFactor;
             g = lum + (g - lum) * satFactor;
             b = lum + (b - lum) * satFactor;
 
-            // 5. Professional Presets (Smooth Curves, ZERO Face Blotches)
+            // 6. Professional Presets (Hermite Splines)
             float normLum = lum / 255.0f;
 
             if (presetId == 1) { // Cinematic Hollywood (Teal & Orange with Skin Protection)
@@ -174,7 +207,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 b += 22.0f * shWeight;
             }
 
-            // 6. 8-Color HSL Matrix (Continuous smooth hue window)
+            // 7. 8-Color HSL Matrix
             float hVal, sVal, lVal;
             rgb2hsl(r, g, b, hVal, sVal, lVal);
 
@@ -201,7 +234,7 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 hsl2rgb(hVal, sVal, lVal, r, g, b);
             }
 
-            // 7. Natural Vignette
+            // 8. Natural Vignette
             if (vignette > 0.001f) {
                 float dx = x - cx;
                 float vFactor = std::max(0.0f, 1.0f - (vignette * ((dx * dx + dySq) / maxDistSq)));
