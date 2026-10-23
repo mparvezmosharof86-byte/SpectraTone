@@ -10,7 +10,6 @@ static inline uint8_t clamp8(float v) {
     return static_cast<uint8_t>(v);
 }
 
-// Smooth Hermite Spline (Eliminates skin posterization & face blotches)
 static inline float smoothstep(float edge0, float edge1, float x) {
     float t = std::max(0.0f, std::min(1.0f, (x - edge0) / (edge1 - edge0)));
     return t * t * (3.0f - 2.0f * t);
@@ -59,7 +58,7 @@ static inline void hsl2rgb(float h, float s, float l, float& r, float& g, float&
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_novastudio24_spectratone_engine_NativeEngine_getEngineStatus(
         JNIEnv* env, jobject /* this */) {
-    return env->NewStringUTF("SpectraTone Master Studio Core Online");
+    return env->NewStringUTF("SpectraTone Frequency Separation Engine Online");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -104,6 +103,9 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
 
     const float centerHues[8] = { 0.0f, 30.0f, 60.0f, 120.0f, 180.0f, 240.0f, 280.0f, 320.0f };
 
+    // Step radius for high quality skin smoothing (Photoshop style)
+    const int kRadius = 3; 
+
     for (int y = 0; y < height; ++y) {
         float dy = y - cy;
         float dySq = dy * dy;
@@ -118,40 +120,49 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             float b = srcRow[px + 2];
             uint8_t a = srcRow[px + 3];
 
-            // 1. Natural Skin Smoothing (Bilateral Edge-Preserving Filter)
-            if (skinSmooth > 0.01f && y > 1 && y < height - 2 && x > 1 && x < width - 2) {
+            // 1. Studio Skin Retouch (Wide-Range Bilateral Blur)
+            if (skinSmooth > 0.02f && y >= kRadius && y < height - kRadius && x >= kRadius && x < width - kRadius) {
                 float hV, sV, lV;
                 rgb2hsl(r, g, b, hV, sV, lV);
-                // Detect human skin tone range
-                if (hV >= 8.0f && hV <= 48.0f && sV >= 0.12f && sV <= 0.75f && lV >= 0.15f && lV <= 0.90f) {
-                    float sumR = r, sumG = g, sumB = b;
-                    float totalWeight = 1.0f;
 
-                    uint8_t* top = srcBytes + ((y - 1) * srcStride) + px;
-                    uint8_t* bot = srcBytes + ((y + 1) * srcStride) + px;
-                    uint8_t* left = srcRow + px - 4;
-                    uint8_t* right = srcRow + px + 4;
+                // Human skin detection (Hue 6 to 52 deg)
+                if (hV >= 6.0f && hV <= 52.0f && sV >= 0.10f && sV <= 0.80f && lV >= 0.15f && lV <= 0.92f) {
+                    float sumR = 0, sumG = 0, sumB = 0;
+                    float wSum = 0;
 
-                    uint8_t* neighbors[4] = {top, bot, left, right};
-                    for (int n = 0; n < 4; ++n) {
-                        float nR = neighbors[n][0];
-                        float nG = neighbors[n][1];
-                        float nB = neighbors[n][2];
-                        float diff = std::abs(r - nR) + std::abs(g - nG) + std::abs(b - nB);
-                        // If color difference is small (skin pores/acne), smooth it. If large (hair/eyes), protect it!
-                        if (diff < 50.0f) {
-                            float w = 0.5f * (1.0f - diff / 50.0f);
-                            sumR += nR * w; sumG += nG * w; sumB += nB * w;
-                            totalWeight += w;
+                    for (int ky = -kRadius; ky <= kRadius; ky += 2) {
+                        uint8_t* kRow = srcBytes + ((y + ky) * srcStride);
+                        for (int kx = -kRadius; kx <= kRadius; kx += 2) {
+                            int kpx = (x + kx) * 4;
+                            float nr = kRow[kpx];
+                            float ng = kRow[kpx + 1];
+                            float nb = kRow[kpx + 2];
+
+                            float colorDiff = std::abs(r - nr) + std::abs(g - ng) + std::abs(b - nb);
+                            if (colorDiff < 75.0f) {
+                                float weight = 1.0f - (colorDiff / 75.0f);
+                                sumR += nr * weight;
+                                sumG += ng * weight;
+                                sumB += nb * weight;
+                                wSum += weight;
+                            }
                         }
                     }
-                    r = r * (1.0f - skinSmooth) + (sumR / totalWeight) * skinSmooth;
-                    g = g * (1.0f - skinSmooth) + (sumG / totalWeight) * skinSmooth;
-                    b = b * (1.0f - skinSmooth) + (sumB / totalWeight) * skinSmooth;
+
+                    if (wSum > 0.01f) {
+                        float blurR = sumR / wSum;
+                        float blurG = sumG / wSum;
+                        float blurB = sumB / wSum;
+
+                        float blend = skinSmooth * 0.85f;
+                        r = r * (1.0f - blend) + blurR * blend;
+                        g = g * (1.0f - blend) + blurG * blend;
+                        b = b * (1.0f - blend) + blurB * blend;
+                    }
                 }
             }
 
-            // 2. High-Pass Edge Sharpening (Zero Halo)
+            // 2. High-Pass Edge Sharpening (Only for genuine contrast edges)
             if (sharpness > 0.01f && y > 0 && y < height - 1 && x > 0 && x < width - 1) {
                 uint8_t* topRow = srcBytes + ((y - 1) * srcStride);
                 uint8_t* botRow = srcBytes + ((y + 1) * srcStride);
@@ -160,9 +171,9 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
                 float hpG = 4.0f * g - topRow[px + 1] - botRow[px + 1] - srcRow[px - 3] - srcRow[px + 5];
                 float hpB = 4.0f * b - topRow[px + 2] - botRow[px + 2] - srcRow[px - 2] - srcRow[px + 6];
 
-                r += hpR * (sharpness * 0.20f);
-                g += hpG * (sharpness * 0.20f);
-                b += hpB * (sharpness * 0.20f);
+                r += hpR * (sharpness * 0.18f);
+                g += hpG * (sharpness * 0.18f);
+                b += hpB * (sharpness * 0.18f);
             }
 
             // 3. White Balance & Brightness
@@ -181,30 +192,30 @@ Java_com_novastudio24_spectratone_engine_NativeEngine_applyAdjustments(
             g = lum + (g - lum) * satFactor;
             b = lum + (b - lum) * satFactor;
 
-            // 6. Professional Presets (Hermite Splines)
+            // 6. Professional Presets (Hermite Spline)
             float normLum = lum / 255.0f;
 
-            if (presetId == 1) { // Cinematic Hollywood (Teal & Orange with Skin Protection)
+            if (presetId == 1) { // Cinematic (Smooth Skin Protection)
                 float hiWeight = smoothstep(0.40f, 0.85f, normLum);
                 float shWeight = 1.0f - smoothstep(0.15f, 0.60f, normLum);
 
-                r += 14.0f * hiWeight - 10.0f * shWeight;
-                g += 4.0f * hiWeight + 3.0f * shWeight;
-                b += -12.0f * hiWeight + 16.0f * shWeight;
+                r += 12.0f * hiWeight - 8.0f * shWeight;
+                g += 3.0f * hiWeight + 2.0f * shWeight;
+                b += -10.0f * hiWeight + 14.0f * shWeight;
             } else if (presetId == 2) { // Vintage Matte Film
-                float shLift = (1.0f - normLum) * 18.0f;
-                r += 10.0f + shLift * 0.4f;
-                g += 6.0f + shLift * 0.2f;
-                b = b * 0.90f + shLift * 0.5f;
-            } else if (presetId == 3) { // Film Noir Rich B&W (Silver Halide S-Curve)
+                float shLift = (1.0f - normLum) * 16.0f;
+                r += 8.0f + shLift * 0.35f;
+                g += 5.0f + shLift * 0.15f;
+                b = b * 0.92f + shLift * 0.45f;
+            } else if (presetId == 3) { // Film Noir Rich B&W
                 float mono = 0.299f * r + 0.587f * g + 0.114f * b;
                 float mNorm = mono / 255.0f;
                 float curved = (mNorm < 0.5f) ? (2.0f * mNorm * mNorm) : (1.0f - 2.0f * (1.0f - mNorm) * (1.0f - mNorm));
                 r = g = b = curved * 255.0f;
-            } else if (presetId == 4) { // Cyberpunk Neon
+            } else if (presetId == 4) { // Cyberpunk
                 float shWeight = 1.0f - smoothstep(0.25f, 0.75f, normLum);
-                r += 10.0f * (1.0f - shWeight);
-                b += 22.0f * shWeight;
+                r += 8.0f * (1.0f - shWeight);
+                b += 18.0f * shWeight;
             }
 
             // 7. 8-Color HSL Matrix
