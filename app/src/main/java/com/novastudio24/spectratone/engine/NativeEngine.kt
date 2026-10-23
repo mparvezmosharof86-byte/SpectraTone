@@ -19,6 +19,7 @@ object NativeEngine {
         tint: Float,
         vignette: Float,
         sharpness: Float,
+        skinSmooth: Float,
         presetId: Int,
         hslArray: FloatArray
     ): Boolean
