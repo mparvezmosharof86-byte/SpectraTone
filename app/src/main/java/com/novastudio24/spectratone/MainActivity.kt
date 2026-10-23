@@ -3,6 +3,7 @@ package com.novastudio24.spectratone
 import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
@@ -67,7 +68,7 @@ class MainActivity : ComponentActivity() {
 }
 
 enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM, AI_STUDIO }
-enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, SHARPNESS, WARMTH, TINT, VIGNETTE }
+enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, SKIN_SMOOTH, SHARPNESS, WARMTH, TINT, VIGNETTE }
 data class FilterPreset(val id: Int, val name: String)
 data class HslColorInfo(val index: Int, val name: String, val color: Color)
 data class BgColorChoice(val name: String, val color: Int?, val isTransparent: Boolean = false)
@@ -92,11 +93,17 @@ fun SpectraToneStudioApp() {
     var brightness by remember { mutableFloatStateOf(0.0f) }
     var contrast by remember { mutableFloatStateOf(0.0f) }
     var saturation by remember { mutableFloatStateOf(0.0f) }
+    var skinSmooth by remember { mutableFloatStateOf(0.0f) }
     var sharpness by remember { mutableFloatStateOf(0.0f) }
     var warmth by remember { mutableFloatStateOf(0.0f) }
     var tint by remember { mutableFloatStateOf(0.0f) }
     var vignette by remember { mutableFloatStateOf(0.0f) }
     var selectedPresetId by remember { mutableIntStateOf(0) }
+
+    // Cutout Styling State
+    var activeBgColor by remember { mutableStateOf<Int?>(null) }
+    var hasOutline by remember { mutableStateOf(false) }
+    var hasDropShadow by remember { mutableStateOf(false) }
 
     val hslValues = remember { mutableStateListOf(*Array(24) { 0.0f }) }
     var selectedColorIndex by remember { mutableIntStateOf(0) }
@@ -152,6 +159,18 @@ fun SpectraToneStudioApp() {
         renderVersion++
     }
 
+    fun rebuildCutoutComposite() {
+        val base = cutoutBitmap ?: return
+        val styled = applyCutoutStyling(
+            base,
+            bgColor = activeBgColor,
+            strokeColor = if (hasOutline) android.graphics.Color.WHITE else null,
+            strokeWidth = if (hasOutline) 12f else 0f,
+            hasShadow = hasDropShadow
+        )
+        setupNewBitmap(styled)
+    }
+
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
             try {
@@ -163,10 +182,13 @@ fun SpectraToneStudioApp() {
                 context.contentResolver.openInputStream(it)?.use { stream ->
                     bmp = autoRotateBitmap(stream, bmp)
                 }
-                brightness = 0.0f; contrast = 0.0f; saturation = 0.0f; sharpness = 0.0f
+                brightness = 0.0f; contrast = 0.0f; saturation = 0.0f; skinSmooth = 0.0f; sharpness = 0.0f
                 warmth = 0.0f; tint = 0.0f; vignette = 0.0f; selectedPresetId = 0
                 for (i in 0 until 24) hslValues[i] = 0.0f
                 cutoutBitmap = null
+                hasOutline = false
+                hasDropShadow = false
+                activeBgColor = null
                 setupNewBitmap(bmp)
             } catch (e: Exception) {
                 Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -174,7 +196,7 @@ fun SpectraToneStudioApp() {
         }
     }
 
-    LaunchedEffect(brightness, contrast, saturation, sharpness, warmth, tint, vignette, selectedPresetId, hslValues.toList(), previewOriginal) {
+    LaunchedEffect(brightness, contrast, saturation, skinSmooth, sharpness, warmth, tint, vignette, selectedPresetId, hslValues.toList(), previewOriginal) {
         val src = previewOriginal ?: return@LaunchedEffect
         val dst = previewEdited ?: return@LaunchedEffect
 
@@ -182,7 +204,7 @@ fun SpectraToneStudioApp() {
             NativeEngine.applyAdjustments(
                 src, dst,
                 brightness, contrast, saturation,
-                warmth, tint, vignette, sharpness,
+                warmth, tint, vignette, sharpness, skinSmooth,
                 selectedPresetId, hslValues.toFloatArray()
             )
         }
@@ -192,7 +214,7 @@ fun SpectraToneStudioApp() {
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF09090D)) {
         Column(modifier = Modifier.fillMaxSize()) {
 
-            // Top Studio Header
+            // Top Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -202,16 +224,11 @@ fun SpectraToneStudioApp() {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF00E676))
-                    )
+                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(Color(0xFF00E676)))
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text("SpectraTone", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                        Text("PRO STUDIO ENGINE", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676), letterSpacing = 1.sp)
+                        Text("PRO MASTER STUDIO", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676), letterSpacing = 1.sp)
                     }
                 }
 
@@ -233,11 +250,11 @@ fun SpectraToneStudioApp() {
                                 NativeEngine.applyAdjustments(
                                     fullOriginal, fullOutput,
                                     brightness, contrast, saturation,
-                                    warmth, tint, vignette, sharpness,
+                                    warmth, tint, vignette, sharpness, skinSmooth,
                                     selectedPresetId, hslValues.toFloatArray()
                                 )
                                 saveBitmapToGallery(context, fullOutput)
-                                Toast.makeText(context, "Saved to Gallery in 100% Ultra Quality!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Saved in 100% Ultra Quality!", Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
                             shape = RoundedCornerShape(8.dp),
@@ -249,7 +266,7 @@ fun SpectraToneStudioApp() {
                 }
             }
 
-            // Canvas & Empty State
+            // Canvas & Preview
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -371,7 +388,7 @@ fun SpectraToneStudioApp() {
                 }
             }
 
-            // Bottom Editing Deck
+            // Bottom Controls
             if (previewOriginal != null) {
                 Column(
                     modifier = Modifier
@@ -411,6 +428,7 @@ fun SpectraToneStudioApp() {
                                 AdjustTool.BRIGHTNESS -> brightness
                                 AdjustTool.CONTRAST -> contrast
                                 AdjustTool.SATURATION -> saturation
+                                AdjustTool.SKIN_SMOOTH -> skinSmooth
                                 AdjustTool.SHARPNESS -> sharpness
                                 AdjustTool.WARMTH -> warmth
                                 AdjustTool.TINT -> tint
@@ -418,7 +436,7 @@ fun SpectraToneStudioApp() {
                             }
                             val range = when (selectedTool) {
                                 AdjustTool.CONTRAST -> -100.0f..100.0f
-                                AdjustTool.SHARPNESS, AdjustTool.VIGNETTE -> 0.0f..1.0f
+                                AdjustTool.SKIN_SMOOTH, AdjustTool.SHARPNESS, AdjustTool.VIGNETTE -> 0.0f..1.0f
                                 else -> -1.0f..1.0f
                             }
 
@@ -426,7 +444,7 @@ fun SpectraToneStudioApp() {
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(selectedTool.name, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676))
+                                Text(selectedTool.name.replace("_", " "), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676))
                                 Text(
                                     String.format("%.0f", if (selectedTool == AdjustTool.CONTRAST) currentVal else currentVal * 100),
                                     fontSize = 11.sp,
@@ -441,6 +459,7 @@ fun SpectraToneStudioApp() {
                                         AdjustTool.BRIGHTNESS -> brightness = v
                                         AdjustTool.CONTRAST -> contrast = v
                                         AdjustTool.SATURATION -> saturation = v
+                                        AdjustTool.SKIN_SMOOTH -> skinSmooth = v
                                         AdjustTool.SHARPNESS -> sharpness = v
                                         AdjustTool.WARMTH -> warmth = v
                                         AdjustTool.TINT -> tint = v
@@ -452,9 +471,7 @@ fun SpectraToneStudioApp() {
                             )
 
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 AdjustTool.values().forEach { tool ->
@@ -467,7 +484,7 @@ fun SpectraToneStudioApp() {
                                             .clickable { selectedTool = tool }
                                             .padding(horizontal = 10.dp, vertical = 6.dp)
                                     ) {
-                                        Text(tool.name, fontSize = 10.sp, color = if (isToolSel) Color(0xFF00E676) else Color.White)
+                                        Text(tool.name.replace("_", " "), fontSize = 10.sp, color = if (isToolSel) Color(0xFF00E676) else Color.White)
                                     }
                                 }
                             }
@@ -475,10 +492,7 @@ fun SpectraToneStudioApp() {
 
                         ModeTab.HSL_MIX -> {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState())
-                                    .padding(bottom = 8.dp),
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 colorsList.forEach { c ->
@@ -508,9 +522,7 @@ fun SpectraToneStudioApp() {
 
                         ModeTab.PRESETS -> {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 presets.forEach { preset ->
@@ -530,9 +542,7 @@ fun SpectraToneStudioApp() {
 
                         ModeTab.TRANSFORM -> {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Button(onClick = {
@@ -566,9 +576,7 @@ fun SpectraToneStudioApp() {
                         ModeTab.AI_STUDIO -> {
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -580,10 +588,10 @@ fun SpectraToneStudioApp() {
                                                     val cutout = callGradioAiCutout(bmp)
                                                     if (cutout != null) {
                                                         cutoutBitmap = cutout
-                                                        setupNewBitmap(cutout)
+                                                        rebuildCutoutComposite()
                                                         Toast.makeText(context, "AI Cutout Successful!", Toast.LENGTH_SHORT).show()
                                                     } else {
-                                                        Toast.makeText(context, "Connecting to GPU... Try once more in a moment.", Toast.LENGTH_LONG).show()
+                                                        Toast.makeText(context, "Connecting to GPU... Try once more.", Toast.LENGTH_LONG).show()
                                                     }
                                                     isAiProcessing = false
                                                 }
@@ -596,15 +604,36 @@ fun SpectraToneStudioApp() {
                                     }
 
                                     if (cutoutBitmap != null) {
+                                        // Outline Stroke Toggle (PicsArt style)
+                                        Button(
+                                            onClick = {
+                                                hasOutline = !hasOutline
+                                                rebuildCutoutComposite()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = if (hasOutline) Color(0xFF00E676) else Color(0xFF1F1F2C)),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text("White Outline", fontSize = 11.sp, color = if (hasOutline) Color.Black else Color.White, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        // Drop Shadow Toggle
+                                        Button(
+                                            onClick = {
+                                                hasDropShadow = !hasDropShadow
+                                                rebuildCutoutComposite()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = if (hasDropShadow) Color(0xFF00E676) else Color(0xFF1F1F2C)),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text("Drop Shadow", fontSize = 11.sp, color = if (hasDropShadow) Color.Black else Color.White, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        // Background Choices
                                         bgChoices.forEach { choice ->
                                             Button(
                                                 onClick = {
-                                                    val result = if (choice.isTransparent) {
-                                                        cutoutBitmap!!
-                                                    } else {
-                                                        applyBackgroundColor(cutoutBitmap!!, choice.color!!)
-                                                    }
-                                                    setupNewBitmap(result)
+                                                    activeBgColor = choice.color
+                                                    rebuildCutoutComposite()
                                                 },
                                                 colors = ButtonDefaults.buttonColors(
                                                     containerColor = when (choice.name) {
@@ -636,10 +665,39 @@ fun SpectraToneStudioApp() {
     }
 }
 
-fun applyBackgroundColor(cutout: Bitmap, color: Int): Bitmap {
+// Applies Background Color, Outline Stroke & Drop Shadow around Cutout (PicsArt/Thumbnail engine)
+fun applyCutoutStyling(
+    cutout: Bitmap,
+    bgColor: Int?,
+    strokeColor: Int?,
+    strokeWidth: Float,
+    hasShadow: Boolean
+): Bitmap {
     val result = Bitmap.createBitmap(cutout.width, cutout.height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(result)
-    canvas.drawColor(color)
+
+    bgColor?.let { canvas.drawColor(it) }
+
+    // Drop Shadow
+    if (hasShadow) {
+        val shadowAlpha = cutout.extractAlpha()
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(160, 0, 0, 0)
+            maskFilter = BlurMaskFilter(18f, BlurMaskFilter.Blur.NORMAL)
+        }
+        canvas.drawBitmap(shadowAlpha, 0f, 14f, shadowPaint)
+    }
+
+    // Outline Stroke (PicsArt White/Neon Outline)
+    if (strokeColor != null && strokeWidth > 0f) {
+        val alpha = cutout.extractAlpha()
+        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = strokeColor
+            maskFilter = BlurMaskFilter(strokeWidth, BlurMaskFilter.Blur.SOLID)
+        }
+        canvas.drawBitmap(alpha, 0f, 0f, strokePaint)
+    }
+
     canvas.drawBitmap(cutout, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG))
     return result
 }
