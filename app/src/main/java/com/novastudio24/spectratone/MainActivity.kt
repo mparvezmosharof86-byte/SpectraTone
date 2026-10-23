@@ -22,6 +22,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -39,6 +40,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -68,7 +70,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-enum class ModeTab { ADJUST, HSL_MIX, PRESETS, TRANSFORM, AI_STUDIO }
+enum class ModeTab { ADJUST, CURVES, HSL_MIX, PRESETS, TRANSFORM, AI_STUDIO }
 enum class AdjustTool { BRIGHTNESS, CONTRAST, SATURATION, SKIN_SMOOTH, SHARPNESS, WARMTH, TINT, VIGNETTE }
 data class FilterPreset(val id: Int, val name: String)
 data class HslColorInfo(val index: Int, val name: String, val color: Color)
@@ -87,10 +89,14 @@ fun SpectraToneStudioApp() {
     var isAiProcessing by remember { mutableStateOf(false) }
     var renderVersion by remember { mutableIntStateOf(0) }
 
+    // Split-Screen Interactive Compare
+    var isSplitMode by remember { mutableStateOf(false) }
+    var splitFraction by remember { mutableFloatStateOf(0.5f) }
+
     var currentMode by remember { mutableStateOf(ModeTab.ADJUST) }
     var selectedTool by remember { mutableStateOf(AdjustTool.BRIGHTNESS) }
 
-    // Sliders
+    // Basic Sliders
     var brightness by remember { mutableFloatStateOf(0.0f) }
     var contrast by remember { mutableFloatStateOf(0.0f) }
     var saturation by remember { mutableFloatStateOf(0.0f) }
@@ -101,7 +107,12 @@ fun SpectraToneStudioApp() {
     var vignette by remember { mutableFloatStateOf(0.0f) }
     var selectedPresetId by remember { mutableIntStateOf(0) }
 
-    // Cutout Styling State
+    // Lightroom Tone Curves
+    var curveShadows by remember { mutableFloatStateOf(0.0f) }
+    var curveMidtones by remember { mutableFloatStateOf(0.0f) }
+    var curveHighlights by remember { mutableFloatStateOf(0.0f) }
+
+    // Cutout Styling
     var activeBgColor by remember { mutableStateOf<Int?>(null) }
     var hasOutline by remember { mutableStateOf(false) }
     var hasDropShadow by remember { mutableStateOf(false) }
@@ -109,7 +120,6 @@ fun SpectraToneStudioApp() {
     val hslValues = remember { mutableStateListOf(*Array(24) { 0.0f }) }
     var selectedColorIndex by remember { mutableIntStateOf(0) }
 
-    // Conflated Frame Channel: Eliminates all tearing/banding
     val renderChannel = remember { Channel<Unit>(Channel.CONFLATED) }
 
     val colorsList = remember {
@@ -194,6 +204,7 @@ fun SpectraToneStudioApp() {
 
                 brightness = 0.0f; contrast = 0.0f; saturation = 0.0f; skinSmooth = 0.0f; sharpness = 0.0f
                 warmth = 0.0f; tint = 0.0f; vignette = 0.0f; selectedPresetId = 0
+                curveShadows = 0.0f; curveMidtones = 0.0f; curveHighlights = 0.0f
                 for (i in 0 until 24) hslValues[i] = 0.0f
                 cutoutBitmap = null
                 hasOutline = false
@@ -206,7 +217,7 @@ fun SpectraToneStudioApp() {
         }
     }
 
-    // Single-Consumer Coroutine Worker: Eliminates all race conditions
+    // Frame-Sync Worker
     LaunchedEffect(renderChannel) {
         for (signal in renderChannel) {
             val src = previewOriginal ?: continue
@@ -217,6 +228,7 @@ fun SpectraToneStudioApp() {
                     src, dst,
                     brightness, contrast, saturation,
                     warmth, tint, vignette, sharpness, skinSmooth,
+                    curveShadows, curveMidtones, curveHighlights,
                     selectedPresetId, hslValues.toFloatArray()
                 )
             }
@@ -224,15 +236,18 @@ fun SpectraToneStudioApp() {
         }
     }
 
-    // Signal engine on slider change
-    LaunchedEffect(brightness, contrast, saturation, skinSmooth, sharpness, warmth, tint, vignette, selectedPresetId, hslValues.toList(), previewOriginal) {
+    LaunchedEffect(
+        brightness, contrast, saturation, skinSmooth, sharpness,
+        warmth, tint, vignette, curveShadows, curveMidtones, curveHighlights,
+        selectedPresetId, hslValues.toList(), previewOriginal
+    ) {
         renderChannel.trySend(Unit)
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF09090D)) {
         Column(modifier = Modifier.fillMaxSize()) {
 
-            // Top Header
+            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -246,7 +261,7 @@ fun SpectraToneStudioApp() {
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text("SpectraTone", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                        Text("PRO MASTER STUDIO", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676), letterSpacing = 1.sp)
+                        Text("CURVES & STUDIO PRO", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676), letterSpacing = 1.sp)
                     }
                 }
 
@@ -257,7 +272,7 @@ fun SpectraToneStudioApp() {
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Text(if (previewOriginal == null) "Open Photo" else "Change", fontSize = 12.sp, color = Color.White)
+                        Text(if (previewOriginal == null) "Open" else "Change", fontSize = 12.sp, color = Color.White)
                     }
 
                     if (masterBitmap != null) {
@@ -269,6 +284,7 @@ fun SpectraToneStudioApp() {
                                     fullOriginal, fullOutput,
                                     brightness, contrast, saturation,
                                     warmth, tint, vignette, sharpness, skinSmooth,
+                                    curveShadows, curveMidtones, curveHighlights,
                                     selectedPresetId, hslValues.toFloatArray()
                                 )
                                 saveBitmapToGallery(context, fullOutput)
@@ -284,7 +300,7 @@ fun SpectraToneStudioApp() {
                 }
             }
 
-            // Canvas & Preview
+            // Canvas Area with Split-Screen Slider
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -321,7 +337,7 @@ fun SpectraToneStudioApp() {
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("No Photo Loaded", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text("Select a photo to unleash C++ Color Science & AI Cutout Engine", fontSize = 12.sp, color = Color.Gray, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Text("Select a photo to unleash Curves, C++ Math & AI Studio", fontSize = 12.sp, color = Color.Gray)
                         Spacer(modifier = Modifier.height(24.dp))
 
                         Button(
@@ -356,35 +372,121 @@ fun SpectraToneStudioApp() {
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        key(renderVersion, showOriginal) {
-                            val displayBmp = if (showOriginal) previewOriginal else previewEdited
-                            displayBmp?.let {
-                                Image(
-                                    bitmap = it.asImageBitmap(),
-                                    contentDescription = "Preview",
+                        key(renderVersion, showOriginal, isSplitMode, splitFraction) {
+                            val origBmp = previewOriginal
+                            val editBmp = previewEdited
+
+                            if (isSplitMode && origBmp != null && editBmp != null) {
+                                // Real-Time Interactive Split-Screen Canvas
+                                BoxWithConstraints(
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .pointerInput(Unit) {
-                                            detectTapGestures(onPress = { showOriginal = true; tryAwaitRelease(); showOriginal = false })
+                                            detectDragGestures { change, dragAmount ->
+                                                change.consume()
+                                                val newFrac = splitFraction + (dragAmount.x / size.width)
+                                                splitFraction = newFrac.coerceIn(0.05f, 0.95f)
+                                            }
                                         }
-                                )
+                                ) {
+                                    val editImageBitmap = remember(editBmp, renderVersion) { editBmp.asImageBitmap() }
+                                    val origImageBitmap = remember(origBmp) { origBmp.asImageBitmap() }
+
+                                    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                                        val canvasW = size.width
+                                        val canvasH = size.height
+
+                                        // Calculate aspect ratio fit for both
+                                        val bmpW = editBmp.width.toFloat()
+                                        val bmpH = editBmp.height.toFloat()
+                                        val scale = minOf(canvasW / bmpW, canvasH / bmpH)
+                                        val drawW = bmpW * scale
+                                        val drawH = bmpH * scale
+                                        val leftOffset = (canvasW - drawW) / 2f
+                                        val topOffset = (canvasH - drawH) / 2f
+
+                                        val dstOffset = androidx.compose.ui.unit.IntOffset(leftOffset.toInt(), topOffset.toInt())
+                                        val dstSize = androidx.compose.ui.unit.IntSize(drawW.toInt(), drawH.toInt())
+
+                                        // 1. Draw Edited Image on Right
+                                        drawImage(image = editImageBitmap, dstOffset = dstOffset, dstSize = dstSize)
+
+                                        // 2. Draw Original Image on Left (Clipped)
+                                        val splitX = canvasW * splitFraction
+                                        clipRect(left = 0f, top = 0f, right = splitX, bottom = canvasH) {
+                                            drawImage(image = origImageBitmap, dstOffset = dstOffset, dstSize = dstSize)
+                                        }
+
+                                        // 3. Draw Vertical Split Bar + Handle
+                                        drawLine(
+                                            color = androidx.compose.ui.graphics.Color(0xFF00E676),
+                                            start = Offset(splitX, topOffset),
+                                            end = Offset(splitX, topOffset + drawH),
+                                            strokeWidth = 3.dp.toPx()
+                                        )
+                                        drawCircle(
+                                            color = androidx.compose.ui.graphics.Color.White,
+                                            radius = 12.dp.toPx(),
+                                            center = Offset(splitX, topOffset + drawH / 2f)
+                                        )
+                                        drawCircle(
+                                            color = androidx.compose.ui.graphics.Color(0xFF00E676),
+                                            radius = 6.dp.toPx(),
+                                            center = Offset(splitX, topOffset + drawH / 2f)
+                                        )
+                                    }
+                                }
+                            } else {
+                                val displayBmp = if (showOriginal) previewOriginal else previewEdited
+                                displayBmp?.let {
+                                    Image(
+                                        bitmap = it.asImageBitmap(),
+                                        contentDescription = "Preview",
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(onPress = { showOriginal = true; tryAwaitRelease(); showOriginal = false })
+                                            }
+                                    )
+                                }
                             }
                         }
 
-                        Surface(
-                            color = Color.Black.copy(0.7f),
-                            shape = RoundedCornerShape(6.dp),
+                        // Top Controls Overlay (Split View Toggle & Compare Badge)
+                        Row(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .padding(10.dp)
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = if (showOriginal) "SHOWING ORIGINAL" else "HOLD TO COMPARE",
-                                color = if (showOriginal) Color(0xFFFFD54F) else Color.White,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
+                            Surface(
+                                color = if (isSplitMode) Color(0xFF00E676) else Color.Black.copy(0.7f),
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier.clickable { isSplitMode = !isSplitMode }
+                            ) {
+                                Text(
+                                    text = if (isSplitMode) "EXIT SPLIT" else "SPLIT VIEW",
+                                    color = if (isSplitMode) Color.Black else Color.White,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                )
+                            }
+
+                            if (!isSplitMode) {
+                                Surface(
+                                    color = Color.Black.copy(0.7f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (showOriginal) "SHOWING ORIGINAL" else "HOLD TO COMPARE",
+                                        color = if (showOriginal) Color(0xFFFFD54F) else Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
                         }
 
                         if (isAiProcessing) {
@@ -414,6 +516,7 @@ fun SpectraToneStudioApp() {
                         .background(Color(0xFF101016))
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
+                    // Mode Tabs
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -503,6 +606,39 @@ fun SpectraToneStudioApp() {
                                             .padding(horizontal = 10.dp, vertical = 6.dp)
                                     ) {
                                         Text(tool.name.replace("_", " "), fontSize = 10.sp, color = if (isToolSel) Color(0xFF00E676) else Color.White)
+                                    }
+                                }
+                            }
+                        }
+
+                        ModeTab.CURVES -> {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                // Tone Curves Sliders (Lightroom Style)
+                                Text("SHADOWS (MATTE FADE): ${String.format("%.0f", curveShadows * 100)}", fontSize = 10.sp, color = Color(0xFF00E676), fontWeight = FontWeight.Bold)
+                                Slider(value = curveShadows, onValueChange = { curveShadows = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
+                                Text("MIDTONES (EXPOSURE): ${String.format("%.0f", curveMidtones * 100)}", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                Slider(value = curveMidtones, onValueChange = { curveMidtones = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
+                                Text("HIGHLIGHTS (LIGHT GLOW): ${String.format("%.0f", curveHighlights * 100)}", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                                Slider(value = curveHighlights, onValueChange = { curveHighlights = it }, valueRange = -1.0f..1.0f, colors = SliderDefaults.colors(thumbColor = Color(0xFF00E676), activeTrackColor = Color(0xFF00E676)))
+
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(onClick = { curveShadows = 0.40f; curveHighlights = -0.20f }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                        Text("Matte Film", fontSize = 11.sp, color = Color(0xFF00E676))
+                                    }
+                                    Button(onClick = { curveShadows = -0.30f; curveHighlights = 0.35f }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                        Text("High Contrast", fontSize = 11.sp, color = Color.White)
+                                    }
+                                    Button(onClick = { curveMidtones = 0.35f }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222E))) {
+                                        Text("Face Glow", fontSize = 11.sp, color = Color.White)
+                                    }
+                                    Button(onClick = { curveShadows = 0f; curveMidtones = 0f; curveHighlights = 0f }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B1B26))) {
+                                        Text("Reset Curves", fontSize = 11.sp, color = Color.Gray)
                                     }
                                 }
                             }
